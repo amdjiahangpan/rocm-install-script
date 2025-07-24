@@ -35,7 +35,8 @@ sudo tee /etc/ld.so.conf.d/rocm.conf > /dev/null <<EOF
 EOF
 sudo ldconfig
 
-export LD_LIBRARY_PATH=/opt/rocm-6.4.0/lib
+echo 'export LD_LIBRARY_PATH=/opt/rocm-6.4.1/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
+
 
 echo "Step 7: Final reboot"
 echo "Installation complete. Rebooting now..."
