@@ -37,5 +37,17 @@ echo "root:$ROOT_PASSWORD" | chpasswd
 echo "=== Step 5: 安装 vim ==="
 apt install -y vim
 
+echo "锁定内核为6.11"
+echo "🔍 正在检查当前内核版本..."
+CURRENT_KERNEL=$(uname -r)
+echo "当前内核: $CURRENT_KERNEL"
+
+echo "🔒 锁定当前内核版本 $CURRENT_KERNEL..."
+apt-mark hold "linux-image-$CURRENT_KERNEL-generic" "linux-headers-$CURRENT_KERNEL" || true
+apt-mark hold linux-image-generic linux-headers-generic || true
+
+echo "✅ 更新 grub 引导项..."
+update-grub
+
 echo "=== 初始化完成 ==="
 
