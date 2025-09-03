@@ -39,6 +39,8 @@ apt install -y vim
 
 echo "=== Step 6: 锁定 内核 ==="
 
+KERNEL_VERSION=$(uname -r)
+
 echo "🔒 锁定当前内核版本 $KERNEL_VERSION..."
 apt-mark hold "linux-image-$KERNEL_VERSION-generic" "linux-headers-$KERNEL_VERSION" || true
 apt-mark hold linux-image-generic linux-headers-generic || true
