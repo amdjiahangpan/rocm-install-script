@@ -1,8 +1,8 @@
 #!/bin/bash
 
 echo "Step 2: Install AMDGPU installer and basic dependencies"
-wget https://repo.radeon.com/amdgpu-install/6.4.2/ubuntu/noble/amdgpu-install_6.4.60402-1_all.deb
-sudo apt install -y ./amdgpu-install_6.4.60402-1_all.deb
+wget https://repo.radeon.com/amdgpu-install/7.0/ubuntu/noble/amdgpu-install_7.0.70000-1_all.deb
+sudo apt install ./amdgpu-install_7.0.70000-1_all.deb
 sudo apt update
 sudo apt install -y python3-setuptools python3-wheel
 sudo usermod -a -G render,video $LOGNAME
