@@ -35,7 +35,7 @@ echo "=== Step 4: 修改 root 密码 ==="
 echo "root:$ROOT_PASSWORD" | chpasswd
 
 echo "=== Step 5: 安装 vim ==="
-apt install -y vim
+apt install -y vim nfs-common
 
 echo "=== Step 6: 锁定 内核 ==="
 
