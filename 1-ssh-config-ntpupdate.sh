@@ -37,19 +37,9 @@ echo "root:$ROOT_PASSWORD" | chpasswd
 echo "=== Step 5: 安装 vim ==="
 apt install -y vim nfs-common
 
-echo "=== Step 6: 锁定 内核 ==="
+echo "=== Step 6: 更新 内核 ==="
 
-KERNEL_VERSION=$(uname -r)
-
-echo "🔒 锁定当前内核版本 $KERNEL_VERSION..."
-apt-mark hold "linux-image-$KERNEL_VERSION-generic" "linux-headers-$KERNEL_VERSION" || true
-apt-mark hold linux-image-generic linux-headers-generic || true
-
-echo "🚫 禁止内核自动更新（unattended-upgrades）..."
-CONF_FILE="/etc/apt/apt.conf.d/50unattended-upgrades"
-if grep -q "Unattended-Upgrade::Allowed-Origins" "$CONF_FILE"; then
-  sed -i 's/^.*"Ubuntu:Linux";/\/\/ "Ubuntu:Linux";/g' "$CONF_FILE"
-fi
+apt upgrade -y
 
 
 echo "=== 初始化完成 ==="
