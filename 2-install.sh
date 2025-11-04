@@ -1,41 +1,27 @@
 #!/bin/bash
 
-echo "Step 2: Install AMDGPU installer and basic dependencies"
-wget https://repo.radeon.com/amdgpu-install/7.0/ubuntu/noble/amdgpu-install_7.0.70000-1_all.deb
-sudo apt install ./amdgpu-install_7.0.70000-1_all.deb
-sudo apt update
-sudo apt install -y python3-setuptools python3-wheel
-sudo usermod -a -G render,video $LOGNAME
+echo "This script will install 7.9.0 on AMD GFX 1151 (395) GPU. Do not use on CDNA GPUs."
 
-echo "Step 3: Install ROCm core and kernel modules"
+echo "Step 1: Install Python and basic dependencies"
 
-sudo apt install -y "linux-headers-$(uname -r)" "linux-modules-extra-$(uname -r)"
-sudo apt install -y amdgpu-dkms
-sudo apt install -y rocm
+sudo apt install python3.12 python3.12-venv
 
-echo "Step 4: Add user to video/render groups permanently"
+echo "Step 2: Add user to video/render groups permanently"
 sudo usermod -a -G video,render $LOGNAME
 echo 'ADD_EXTRA_GROUPS=1' | sudo tee -a /etc/adduser.conf
 echo 'EXTRA_GROUPS=video' | sudo tee -a /etc/adduser.conf
 echo 'EXTRA_GROUPS=render' | sudo tee -a /etc/adduser.conf
 
-echo "Step 5: Set udev rules"
-sudo bash -c 'cat > /etc/udev/rules.d/70-kfd.rules' <<EOF
-KERNEL=="kfd", MODE="0666"
-SUBSYSTEM=="drm", KERNEL=="renderD*", MODE="0666"
-EOF
-sudo udevadm control --reload-rules && sudo udevadm trigger
 
-echo "Step 6: Set ROCm library paths"
-sudo tee /etc/ld.so.conf.d/rocm.conf > /dev/null <<EOF
-/opt/rocm/lib
-/opt/rocm/lib64
-EOF
-sudo ldconfig
+echo "Step 3: Create virtual environment"
 
-echo 'export LD_LIBRARY_PATH=/opt/rocm-6.4.2/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
+python3.12 -m venv .venv
+source .venv/bin/activate
 
+echo "Step 4: Install AMDGPU installer and basic dependencies"
 
-echo "Step 7: Final reboot"
+python -m pip install --index-url https://repo.amd.com/rocm/whl/gfx1151/ "rocm[libraries,devel]"
+
+echo "Step 5: Final reboot"
 echo "Installation complete. Rebooting now..."
 sudo reboot
