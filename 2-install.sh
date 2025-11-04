@@ -1,8 +1,8 @@
 #!/bin/bash
 
 echo "Step 2: Install AMDGPU installer and basic dependencies"
-wget https://repo.radeon.com/amdgpu-install/7.0/ubuntu/noble/amdgpu-install_7.0.70000-1_all.deb
-sudo apt install ./amdgpu-install_7.0.70000-1_all.deb
+wget https://repo.radeon.com/amdgpu-install/7.1/ubuntu/noble/amdgpu-install_7.1.70100-1_all.deb
+sudo apt install ./amdgpu-install_7.1.70100-1_all.deb
 sudo apt update
 sudo apt install -y python3-setuptools python3-wheel
 sudo usermod -a -G render,video $LOGNAME
@@ -33,7 +33,7 @@ sudo tee /etc/ld.so.conf.d/rocm.conf > /dev/null <<EOF
 EOF
 sudo ldconfig
 
-echo 'export LD_LIBRARY_PATH=/opt/rocm-6.4.2/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/opt/rocm/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
 
 
 echo "Step 7: Final reboot"
