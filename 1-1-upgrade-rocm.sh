@@ -34,11 +34,13 @@ apt update
 apt upgrade -y
 
 
+sudo apt install --reinstall ubuntu-desktop
+sudo apt install --reinstall gnome-shell
+sudo systemctl restart gdm3
+
 echo
 echo "内核安装完成（包已安装）。请手动重启以使用新内核："
 echo "  sudo reboot"
 echo
 echo "重启后请登录并用 'uname -r' 确认正在运行的版本号。"
 echo "当确认运行新内核后，再运行 ROCm 升级脚本 "
-
-reboot
