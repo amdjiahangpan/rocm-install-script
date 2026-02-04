@@ -44,6 +44,15 @@ ROCM_VERSION=""
 NON_INTERACTIVE=false
 ROOT_PASSWORD=""
 
+# TheRock (ROCm 7.9.0+) configuration
+THEROCK_MODE=false
+GPU_ARCH=""
+THEROCK_INSTALL_METHOD="pip"
+THEROCK_VENV_PATH="/opt/rocm-venv"
+PYTHON_VERSION="python3.11"
+THEROCK_WHL_BASE="https://repo.amd.com/rocm/whl"
+THEROCK_TARBALL_BASE="https://repo.amd.com/rocm/tarball"
+
 # Extra packages to install
 EXTRA_PACKAGES=(
     # Basic system utilities
@@ -117,7 +126,8 @@ debug() { echo -e "${CYAN}[DEBUG]${NC} $1" >> "$LOG_FILE" 2>/dev/null; }
 draw_box() {
     local text="$1"
     local width=$((${#text} + 4))
-    local border=$(printf '═%.0s' $(seq 1 $width))
+    local border
+    border=$(printf '═%.0s' $(seq 1 $width))
     echo -e "${BLUE}╔${border}╗${NC}"
     echo -e "${BLUE}║${NC}  ${BOLD}$text${NC}  ${BLUE}║${NC}"
     echo -e "${BLUE}╚${border}╝${NC}"
@@ -146,7 +156,7 @@ spinner() {
     local pid=$1
     local delay=0.1
     local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+    while ps a | awk '{print $1}' | grep -q "$pid"; do
         local temp=${spinstr#?}
         printf " ${CYAN}[%c]${NC} " "$spinstr"
         local spinstr=$temp${spinstr%"$temp"}
@@ -165,10 +175,10 @@ detect_system() {
 
     # Detect OS
     if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/dev/null
         . /etc/os-release
         OS_ID="$ID"
         OS_VERSION="$VERSION_ID"
-        OS_CODENAME="${VERSION_CODENAME:-}"
         OS_NAME="$PRETTY_NAME"
     else
         error "Cannot detect OS. /etc/os-release not found."
@@ -235,6 +245,82 @@ detect_gpu() {
             echo -e "  ${GREEN}✓${NC} $line"
         done <<< "$GPU_LIST"
     fi
+}
+
+#######################################
+# TheRock (GPU Architecture Detection)
+#######################################
+
+# Detect GPU architecture for TheRock installation
+detect_gpu_architecture() {
+    local detected_arch=""
+
+    # Try lspci first
+    if command -v lspci &> /dev/null; then
+        local gpu_info
+        gpu_info=$(lspci -nn | grep -iE "VGA|Display|3D" | grep -i amd || true)
+
+        # MI355X, MI350X -> gfx950-dcgpu
+        if echo "$gpu_info" | grep -qiE "MI355|MI350|gfx950"; then
+            detected_arch="gfx950-dcgpu"
+        # MI325X, MI300X, MI300A -> gfx94X-dcgpu
+        elif echo "$gpu_info" | grep -qiE "MI325|MI300|gfx94"; then
+            detected_arch="gfx94X-dcgpu"
+        # Ryzen AI APUs -> gfx1151
+        elif echo "$gpu_info" | grep -qiE "gfx1151|Strix|Hawk"; then
+            detected_arch="gfx1151"
+        fi
+    fi
+
+    # Try rocminfo if available and no detection yet
+    if [[ -z "$detected_arch" ]] && command -v rocminfo &> /dev/null; then
+        local rocm_info
+        rocm_info=$(rocminfo 2>/dev/null || true)
+
+        if echo "$rocm_info" | grep -qE "gfx950"; then
+            detected_arch="gfx950-dcgpu"
+        elif echo "$rocm_info" | grep -qE "gfx94[0-9]"; then
+            detected_arch="gfx94X-dcgpu"
+        elif echo "$rocm_info" | grep -qE "gfx1151"; then
+            detected_arch="gfx1151"
+        fi
+    fi
+
+    echo "$detected_arch"
+}
+
+# Determine if TheRock installation should be used
+# Decision is based on:
+#   1. Explicit --therock flag
+#   2. Tag prefix: therock-X.Y.Z = pre-release = TheRock mode
+#                  rocm-X.Y.Z = stable = traditional mode
+should_use_therock() {
+    local version="$1"
+
+    # If THEROCK_MODE is explicitly set via --therock flag, use it
+    if [[ "$THEROCK_MODE" == "true" ]]; then
+        return 0
+    fi
+
+    # Pre-release versions (therock-X.Y.Z tags) use TheRock
+    if is_prerelease "$version"; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Check if GPU is an APU (uses kernel driver, no amdgpu-install needed)
+is_apu_gpu() {
+    local arch="$1"
+    case "$arch" in
+        gfx1151)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 
@@ -367,49 +453,19 @@ fetch_available_versions() {
     AVAILABLE_VERSIONS=()
     local source_used=""
 
-    # Primary source: AMD repository
-    echo -e "  Checking AMD repository..."
-    local amd_versions
-    if amd_versions=$(fetch_versions_from_amd_repo); then
-        while IFS= read -r v; do
-            AVAILABLE_VERSIONS+=("$v")
-        done <<< "$amd_versions"
-        source_used="AMD repo"
-    fi
-
-    # Backup source: GitHub releases (merge unique versions)
+    # Primary source: GitHub releases
     echo -e "  Checking GitHub releases..."
     local github_versions
     if github_versions=$(fetch_versions_from_github); then
         while IFS= read -r v; do
-            # Add if not already in list (check both X.Y.Z and X.Y formats)
-            local base_ver="${v%.*}"  # X.Y.Z -> X.Y
-            local found=false
-            for existing in "${AVAILABLE_VERSIONS[@]}"; do
-                if [[ "$existing" == "$v" ]] || [[ "$existing" == "$base_ver" ]]; then
-                    found=true
-                    break
-                fi
-            done
-            if [[ "$found" == "false" ]]; then
-                AVAILABLE_VERSIONS+=("$v")
-            fi
+            AVAILABLE_VERSIONS+=("$v")
         done <<< "$github_versions"
-        if [[ -z "$source_used" ]]; then
-            source_used="GitHub"
-        else
-            source_used="$source_used + GitHub"
-        fi
+        source_used="GitHub"
     fi
 
-    # Re-sort after merging
-    if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
-        mapfile -t AVAILABLE_VERSIONS < <(printf '%s\n' "${AVAILABLE_VERSIONS[@]}" | sort -Vr | uniq)
-    fi
-
-    # Final fallback: hardcoded list
+    # Fallback: hardcoded list
     if [[ ${#AVAILABLE_VERSIONS[@]} -eq 0 ]]; then
-        warn "Cannot fetch versions from online sources. Using cached list."
+        warn "Cannot fetch versions from GitHub. Using cached list."
         AVAILABLE_VERSIONS=("7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
         source_used="cached"
     fi
@@ -581,7 +637,8 @@ get_package_url() {
 
 # Interactive menu for version selection
 show_version_menu() {
-    local latest=$(get_latest_version)
+    local latest
+    latest=$(get_latest_version)
 
     if [[ "$USE_FZF" == "true" ]]; then
         # FZF menu (modern, arrow-key navigation)
@@ -673,12 +730,12 @@ show_version_menu() {
                         echo -e "${RED}No version entered, try again${NC}"
                     fi
                     ;;
-                $((${#options[@]}-1)))
+                "$((${#options[@]}-1))")
                     # Back to main menu
                     show_main_menu
                     return
                     ;;
-                ${#options[@]})
+                "${#options[@]}")
                     echo "Installation cancelled."
                     exit 0
                     ;;
@@ -700,11 +757,184 @@ show_version_menu() {
     echo ""
     log "Selected ROCm version: $ROCM_VERSION"
 
-    # Show warning for pre-release versions
+    # Show warning and trigger TheRock flow for pre-release versions
     if is_prerelease "$ROCM_VERSION"; then
-        echo -e "${YELLOW}⚠ Warning: $ROCM_VERSION is a pre-release version (therock)${NC}"
-        echo -e "${YELLOW}  Pre-release packages may not be available in AMD repository${NC}"
+        echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${YELLOW}║  ⚠  Pre-release Version (TheRock)                            ║${NC}"
+        echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${YELLOW}║  This version uses TheRock installation method:              ║${NC}"
+        echo -e "${YELLOW}║  • pip wheel from repo.amd.com (not amdgpu-install)          ║${NC}"
+        echo -e "${YELLOW}║  • Requires GPU architecture selection                       ║${NC}"
+        echo -e "${YELLOW}║  • Installs to Python virtual environment                    ║${NC}"
+        echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        THEROCK_MODE=true
+
+        # Trigger GPU architecture selection for interactive mode
+        if [[ "$NON_INTERACTIVE" != "true" ]]; then
+            show_gpu_arch_menu
+            show_therock_method_menu
+        fi
     fi
+}
+
+#######################################
+# TheRock GPU Architecture Menu
+#######################################
+
+show_gpu_arch_menu() {
+    local detected_arch
+    detected_arch=$(detect_gpu_architecture)
+
+    if [[ "$USE_FZF" == "true" ]]; then
+        local options=()
+
+        if [[ -n "$detected_arch" ]]; then
+            options+=("$detected_arch  ${GREEN}← Auto-detected${NC}")
+        fi
+
+        # Add all architecture options
+        if [[ "$detected_arch" != "gfx950-dcgpu" ]]; then
+            options+=("gfx950-dcgpu   MI355X, MI350X")
+        fi
+        if [[ "$detected_arch" != "gfx94X-dcgpu" ]]; then
+            options+=("gfx94X-dcgpu   MI325X, MI300X, MI300A")
+        fi
+        if [[ "$detected_arch" != "gfx1151" ]]; then
+            options+=("gfx1151        Ryzen AI APUs (Strix, Hawk)")
+        fi
+
+        options+=("back           ← Back to version selection")
+
+        echo ""
+        echo -e "${BOLD}Select GPU Architecture${NC}"
+        local selection
+        selection=$(for opt in "${options[@]}"; do echo -e "$opt"; done | fzf \
+            --ansi \
+            --layout=reverse \
+            --border=rounded \
+            --prompt="GPU Architecture ❯ " \
+            --header="Select target GPU architecture for TheRock" \
+            --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+
+        if [[ -z "$selection" ]]; then
+            echo "Installation cancelled."
+            exit 0
+        fi
+
+        local arch
+        arch=$(echo "$selection" | awk '{print $1}')
+
+        if [[ "$arch" == "back" ]]; then
+            show_version_menu
+            return
+        fi
+
+        GPU_ARCH="$arch"
+    else
+        # Fallback: bash select
+        local options=()
+
+        if [[ -n "$detected_arch" ]]; then
+            options+=("$detected_arch (Auto-detected)")
+        fi
+
+        options+=("gfx950-dcgpu (MI355X, MI350X)")
+        options+=("gfx94X-dcgpu (MI325X, MI300X, MI300A)")
+        options+=("gfx1151 (Ryzen AI APUs)")
+        options+=("Back to version selection")
+        options+=("Quit")
+
+        echo ""
+        echo -e "${BOLD}Select GPU Architecture${NC}"
+        echo ""
+
+        PS3=$'\n\033[0;36mYour choice: \033[0m'
+
+        select opt in "${options[@]}"; do
+            case "$REPLY" in
+                "${#options[@]}")
+                    echo "Installation cancelled."
+                    exit 0
+                    ;;
+                "$((${#options[@]}-1))")
+                    show_version_menu
+                    return
+                    ;;
+                *)
+                    if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ $REPLY -ge 1 ]] && [[ $REPLY -lt $((${#options[@]}-1)) ]]; then
+                        local selected="${options[$((REPLY-1))]}"
+                        # Extract architecture (first word before space or paren)
+                        GPU_ARCH=$(echo "$selected" | awk '{print $1}')
+                        break
+                    else
+                        echo -e "${RED}Invalid selection, try again${NC}"
+                    fi
+                    ;;
+            esac
+        done
+    fi
+
+    echo ""
+    log "Selected GPU architecture: $GPU_ARCH"
+}
+
+show_therock_method_menu() {
+    if [[ "$USE_FZF" == "true" ]]; then
+        local options=(
+            "pip      ${GREEN}Python venv (Recommended)${NC} - Install to /opt/rocm-venv"
+            "tarball  Manual extraction - Install to /opt/rocm"
+        )
+
+        echo ""
+        echo -e "${BOLD}Select Installation Method${NC}"
+        local selection
+        selection=$(printf '%s\n' "${options[@]}" | fzf \
+            --ansi \
+            --layout=reverse \
+            --border=rounded \
+            --prompt="Install Method ❯ " \
+            --header="Choose TheRock installation method" \
+            --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+
+        if [[ -z "$selection" ]]; then
+            THEROCK_INSTALL_METHOD="pip"
+        else
+            THEROCK_INSTALL_METHOD=$(echo "$selection" | awk '{print $1}')
+        fi
+    else
+        local options=(
+            "pip (Python venv - Recommended)"
+            "tarball (Manual extraction)"
+        )
+
+        echo ""
+        echo -e "${BOLD}Select Installation Method${NC}"
+        echo ""
+
+        PS3=$'\n\033[0;36mYour choice: \033[0m'
+
+        select opt in "${options[@]}"; do
+            case "$REPLY" in
+                1)
+                    THEROCK_INSTALL_METHOD="pip"
+                    break
+                    ;;
+                2)
+                    THEROCK_INSTALL_METHOD="tarball"
+                    break
+                    ;;
+                *)
+                    echo -e "${RED}Invalid selection, defaulting to pip${NC}"
+                    THEROCK_INSTALL_METHOD="pip"
+                    break
+                    ;;
+            esac
+        done
+    fi
+
+    echo ""
+    log "Selected installation method: $THEROCK_INSTALL_METHOD"
 }
 
 #######################################
@@ -713,7 +943,8 @@ show_version_menu() {
 
 show_main_menu() {
     if [[ "$USE_FZF" == "true" ]]; then
-        local latest=$(get_latest_version)
+        local latest
+        latest=$(get_latest_version)
         local options=(
             "quick  ${GREEN}⚡ Quick Install${NC} (Latest: ${CYAN}$latest${NC}, recommended defaults)"
             "custom ${YELLOW}⚙  Custom Installation${NC} (choose version and options)"
@@ -737,7 +968,8 @@ show_main_menu() {
             exit 0
         fi
 
-        local action=$(echo "$selection" | awk '{print $1}')
+        local action
+        action=$(echo "$selection" | awk '{print $1}')
 
         case "$action" in
             quick)
@@ -771,7 +1003,8 @@ show_main_menu() {
         esac
     else
         # Fallback: bash select
-        local latest=$(get_latest_version)
+        local latest
+        latest=$(get_latest_version)
         local options=(
             "⚡ Quick Install (Latest: $latest, recommended defaults)"
             "⚙  Custom Installation (choose version and options)"
@@ -836,9 +1069,12 @@ get_reboot_display() {
 }
 
 show_options_menu() {
-    local dkms_status=$(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)
-    local ssh_status=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)
-    local reboot_status=$(get_reboot_display)
+    local dkms_status
+    local ssh_status
+    local reboot_status
+    dkms_status=$(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)
+    ssh_status=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)
+    reboot_status=$(get_reboot_display)
 
     if [[ "$USE_FZF" == "true" ]]; then
         # FZF menu
@@ -868,7 +1104,8 @@ show_options_menu() {
             exit 0
         fi
 
-        local action=$(echo "$selection" | awk '{print $1}')
+        local action
+        action=$(echo "$selection" | awk '{print $1}')
 
         case "$action" in
             dkms)
@@ -999,7 +1236,8 @@ show_reboot_menu() {
             return
         fi
 
-        local delay=$(echo "$selection" | awk '{print $1}')
+        local delay
+        delay=$(echo "$selection" | awk '{print $1}')
 
         if [[ "$delay" == "custom" ]]; then
             echo ""
@@ -1133,7 +1371,8 @@ show_packages_menu() {
             return
         fi
 
-        local action=$(echo "$selection" | awk '{print $1}')
+        local action
+        action=$(echo "$selection" | awk '{print $1}')
 
         case "$action" in
             view)
@@ -1423,7 +1662,8 @@ step_install_amdgpu() {
     get_package_url "$ROCM_VERSION"
     log "Downloading from: $AMDGPU_URL"
 
-    local temp_dir=$(mktemp -d)
+    local temp_dir
+    temp_dir=$(mktemp -d)
     cd "$temp_dir"
 
     echo -e "  Downloading AMDGPU installer..."
@@ -1435,7 +1675,8 @@ step_install_amdgpu() {
                 local codename
                 [[ "$OS_VERSION" == "22.04" ]] && codename="jammy" || codename="noble"
                 AMDGPU_URL="${REPO_BASE_URL}/latest/ubuntu/${codename}/"
-                local pkg_name=$(curl -s "$AMDGPU_URL" | grep -oP 'amdgpu-install_[^"]+\.deb' | head -1)
+                local pkg_name
+                pkg_name=$(curl -s "$AMDGPU_URL" | grep -oP 'amdgpu-install_[^"]+\.deb' | head -1)
                 wget -q --show-progress "${AMDGPU_URL}${pkg_name}" -O amdgpu-install.pkg
                 ;;
         esac
@@ -1528,7 +1769,8 @@ EOF
     chmod +x /etc/profile.d/rocm.sh
 
     # Also add to user's bashrc
-    local user_home=$(eval echo ~$actual_user)
+    local user_home
+    user_home=$(eval echo "~${actual_user}")
     if [[ -f "$user_home/.bashrc" ]]; then
         if ! grep -q "ROCM_PATH" "$user_home/.bashrc"; then
             cat >> "$user_home/.bashrc" << 'EOF'
@@ -1542,6 +1784,258 @@ EOF
     fi
 
     echo -e "\n  ${GREEN}✓${NC} Environment configured"
+}
+
+#######################################
+# TheRock Installation Steps
+#######################################
+
+step_therock_prerequisites() {
+    echo ""
+    draw_box "Step 4: TheRock Prerequisites"
+    echo ""
+
+    log "Installing Python 3.11 and dependencies for TheRock..."
+
+    case "$PKG_MGR" in
+        apt)
+            # Check if Python 3.11 is available
+            if ! command -v python3.11 &> /dev/null; then
+                # Add deadsnakes PPA for Python 3.11 on Ubuntu
+                if [[ "$OS_ID" == "ubuntu" ]]; then
+                    apt-get install -y software-properties-common
+                    add-apt-repository -y ppa:deadsnakes/ppa
+                    apt-get update
+                fi
+                apt-get install -y python3.11 python3.11-venv python3.11-dev || true
+            fi
+            # Ensure pip is available
+            apt-get install -y python3-pip || true
+            ;;
+        dnf)
+            dnf install -y python3.11 python3.11-pip python3.11-devel || true
+            ;;
+    esac
+
+    # Verify Python 3.11 is available
+    if command -v python3.11 &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} Python 3.11 available: $(python3.11 --version)"
+    else
+        warn "Python 3.11 not available, trying system Python..."
+        PYTHON_VERSION="python3"
+    fi
+
+    echo -e "\n  ${GREEN}✓${NC} TheRock prerequisites installed"
+}
+
+step_therock_install_pip() {
+    echo ""
+    draw_box "Step 5: Installing TheRock via pip"
+    echo ""
+
+    local whl_url="${THEROCK_WHL_BASE}/${GPU_ARCH}/"
+
+    log "Creating Python virtual environment at ${THEROCK_VENV_PATH}..."
+
+    # Create venv
+    ${PYTHON_VERSION} -m venv "${THEROCK_VENV_PATH}"
+
+    # Activate and install
+    log "Installing ROCm from: ${whl_url}"
+
+    # Use subshell to avoid polluting current environment
+    (
+        # shellcheck source=/dev/null
+        source "${THEROCK_VENV_PATH}/bin/activate"
+
+        # Upgrade pip first
+        pip install --upgrade pip
+
+        # Install ROCm packages from TheRock wheel index
+        echo -e "  Installing ROCm packages from TheRock..."
+        pip install --index-url "${whl_url}" "rocm[libraries,devel]" || \
+            pip install --index-url "${whl_url}" rocm-core rocm-smi-lib || \
+            warn "Some ROCm packages may not be available yet"
+    )
+
+    # Create symlink for convenience
+    if [[ -d "${THEROCK_VENV_PATH}/lib" ]]; then
+        ln -sf "${THEROCK_VENV_PATH}" /opt/rocm-therock 2>/dev/null || true
+    fi
+
+    echo -e "\n  ${GREEN}✓${NC} TheRock installed via pip"
+    echo -e "  ${CYAN}Activate with: source ${THEROCK_VENV_PATH}/bin/activate${NC}"
+}
+
+step_therock_install_tarball() {
+    echo ""
+    draw_box "Step 5: Installing TheRock via tarball"
+    echo ""
+
+    local tarball_name="therock-dist-linux-${GPU_ARCH}-${ROCM_VERSION}.tar.gz"
+    local tarball_url="${THEROCK_TARBALL_BASE}/${tarball_name}"
+    local install_path="/opt/rocm-${ROCM_VERSION}"
+
+    log "Downloading TheRock tarball..."
+    log "URL: ${tarball_url}"
+
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir"
+
+    # Try to download
+    if wget -q --show-progress "${tarball_url}" -O therock.tar.gz 2>&1; then
+        log "Extracting to ${install_path}..."
+        mkdir -p "${install_path}"
+        tar -xzf therock.tar.gz -C "${install_path}" --strip-components=1
+
+        # Create symlink
+        ln -sf "${install_path}" /opt/rocm
+
+        echo -e "\n  ${GREEN}✓${NC} TheRock installed to ${install_path}"
+    else
+        error "Failed to download TheRock tarball from ${tarball_url}"
+    fi
+
+    rm -rf "$temp_dir"
+}
+
+step_therock_driver() {
+    echo ""
+    draw_box "Step 6: GPU Driver Configuration"
+    echo ""
+
+    if is_apu_gpu "$GPU_ARCH"; then
+        log "Ryzen AI APU detected - using kernel driver"
+        echo -e "  ${GREEN}✓${NC} APU uses built-in kernel driver (no amdgpu-install needed)"
+        return 0
+    fi
+
+    # For Instinct GPUs, install stable driver
+    log "Installing AMDGPU driver for Instinct GPU..."
+
+    # Get latest stable version for driver
+    local stable_version
+    stable_version=$(get_latest_version)
+
+    # Install amdgpu-install from stable release
+    get_package_url "$stable_version"
+
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir"
+
+    echo -e "  Downloading AMDGPU driver installer (stable $stable_version)..."
+    if wget -q --show-progress "$AMDGPU_URL" -O amdgpu-install.pkg 2>&1; then
+        case "$PKG_MGR" in
+            apt)
+                dpkg -i amdgpu-install.pkg 2>/dev/null || apt-get install -f -y
+                apt-get update
+
+                # Install only the driver, not ROCm
+                if [[ "$NO_DKMS" != "true" ]]; then
+                    echo -e "  Installing AMDGPU DKMS driver..."
+                    apt-get install -y amdgpu-dkms || warn "DKMS installation failed"
+                fi
+                ;;
+            dnf)
+                dnf install -y ./amdgpu-install.pkg
+                amdgpu-install -y --usecase=dkms
+                ;;
+        esac
+
+        echo -e "\n  ${GREEN}✓${NC} AMDGPU driver installed"
+    else
+        warn "Failed to download driver installer - GPU driver may need manual installation"
+    fi
+
+    rm -rf "$temp_dir"
+}
+
+step_therock_configure_env() {
+    echo ""
+    draw_box "Step 7: TheRock Environment Configuration"
+    echo ""
+
+    # Add user to groups
+    local actual_user="${SUDO_USER:-$USER}"
+    usermod -aG video,render "$actual_user" 2>/dev/null || true
+    log "User '$actual_user' added to video,render groups"
+
+    # Udev rules
+    cat > /etc/udev/rules.d/70-amdgpu.rules << 'EOF'
+KERNEL=="kfd", GROUP="render", MODE="0666"
+SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0666"
+EOF
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger 2>/dev/null || true
+
+    if [[ "$THEROCK_INSTALL_METHOD" == "pip" ]]; then
+        # Pip/venv environment
+        cat > /etc/profile.d/rocm.sh << EOF
+# ROCm TheRock Environment (Python venv)
+export ROCM_VENV="${THEROCK_VENV_PATH}"
+if [[ -f "\${ROCM_VENV}/bin/activate" ]]; then
+    source "\${ROCM_VENV}/bin/activate"
+fi
+export ROCM_PATH=/opt/rocm-therock
+EOF
+
+        # Library paths for venv
+        cat > /etc/ld.so.conf.d/rocm.conf << EOF
+${THEROCK_VENV_PATH}/lib
+${THEROCK_VENV_PATH}/lib64
+EOF
+    else
+        # Tarball environment
+        cat > /etc/profile.d/rocm.sh << 'EOF'
+# ROCm TheRock Environment
+export PATH=$PATH:/opt/rocm/bin
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/lib64
+export ROCM_PATH=/opt/rocm
+export HIP_PATH=/opt/rocm
+EOF
+
+        cat > /etc/ld.so.conf.d/rocm.conf << 'EOF'
+/opt/rocm/lib
+/opt/rocm/lib64
+EOF
+    fi
+
+    chmod +x /etc/profile.d/rocm.sh
+    ldconfig
+
+    # Add to user's bashrc
+    local user_home
+    user_home=$(eval echo "~${actual_user}")
+    if [[ -f "$user_home/.bashrc" ]]; then
+        if ! grep -q "ROCM" "$user_home/.bashrc"; then
+            if [[ "$THEROCK_INSTALL_METHOD" == "pip" ]]; then
+                cat >> "$user_home/.bashrc" << EOF
+
+# ROCm TheRock Environment
+export ROCM_VENV="${THEROCK_VENV_PATH}"
+if [[ -f "\${ROCM_VENV}/bin/activate" ]]; then
+    source "\${ROCM_VENV}/bin/activate"
+fi
+EOF
+            else
+                cat >> "$user_home/.bashrc" << 'EOF'
+
+# ROCm TheRock Environment
+export PATH=$PATH:/opt/rocm/bin
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/lib64
+export ROCM_PATH=/opt/rocm
+EOF
+            fi
+        fi
+    fi
+
+    echo -e "\n  ${GREEN}✓${NC} TheRock environment configured"
+
+    if [[ "$THEROCK_INSTALL_METHOD" == "pip" ]]; then
+        echo -e "  ${CYAN}Note: Run 'source ${THEROCK_VENV_PATH}/bin/activate' to use ROCm${NC}"
+    fi
 }
 
 #######################################
@@ -1655,6 +2149,16 @@ Options:
   --non-interactive      Run without prompts (use with --version or --latest)
   --help                 Show this help
 
+TheRock Options (for pre-release versions like 7.9.0+):
+  --gpu-arch ARCH        GPU architecture: gfx950-dcgpu, gfx94X-dcgpu, or gfx1151
+  --therock-method MTD   Installation method: pip (default) or tarball
+  --therock              Force TheRock installation mode
+
+GPU Architecture Reference:
+  gfx950-dcgpu    MI355X, MI350X
+  gfx94X-dcgpu    MI325X, MI300X, MI300A
+  gfx1151         Ryzen AI APUs (Strix, Hawk)
+
 Examples:
   sudo $0                                      # Interactive mode
   sudo $0 --latest                             # Install latest, reboot immediately
@@ -1666,6 +2170,10 @@ Examples:
 
   # Automated installation for scripts
   sudo $0 --latest --non-interactive --reboot-delay 5
+
+  # TheRock pre-release installation
+  sudo $0 --version 7.9.0 --gpu-arch gfx94X-dcgpu --non-interactive --skip-reboot
+  sudo $0 --version 7.9.0 --gpu-arch gfx1151 --therock-method tarball
 
 Supported:
   Ubuntu 22.04, 24.04 | Debian 12 | RHEL/Rocky 9.x
@@ -1690,6 +2198,9 @@ parse_args() {
             --uninstall) UNINSTALL=true; shift ;;
             --no-dkms) NO_DKMS=true; shift ;;
             --non-interactive) NON_INTERACTIVE=true; shift ;;
+            --gpu-arch) GPU_ARCH="$2"; shift 2 ;;
+            --therock-method) THEROCK_INSTALL_METHOD="$2"; shift 2 ;;
+            --therock) THEROCK_MODE=true; shift ;;
             --help|-h) show_help; exit 0 ;;
             *) error "Unknown option: $1" ;;
         esac
@@ -1751,17 +2262,51 @@ main() {
         ROCM_VERSION=$(get_latest_version)
     fi
 
+    # Handle TheRock mode for non-interactive with pre-release version
+    if [[ "$NON_INTERACTIVE" == "true" ]] && should_use_therock "$ROCM_VERSION"; then
+        THEROCK_MODE=true
+        if [[ -z "$GPU_ARCH" ]]; then
+            # Try auto-detection
+            GPU_ARCH=$(detect_gpu_architecture)
+            if [[ -z "$GPU_ARCH" ]]; then
+                error "TheRock requires --gpu-arch parameter (gfx950-dcgpu, gfx94X-dcgpu, or gfx1151)"
+            fi
+            log "Auto-detected GPU architecture: $GPU_ARCH"
+        fi
+    fi
+
     # Installation
     echo ""
     echo -e "${BOLD}Starting installation of ROCm $ROCM_VERSION...${NC}"
+    if [[ "$THEROCK_MODE" == "true" ]]; then
+        echo -e "${YELLOW}Using TheRock installation method${NC}"
+        echo -e "GPU Architecture: ${CYAN}$GPU_ARCH${NC}"
+        echo -e "Install Method: ${CYAN}$THEROCK_INSTALL_METHOD${NC}"
+    fi
     echo ""
 
-    step_prerequisites
-    step_ssh_config
-    step_lock_kernel
-    step_install_amdgpu
-    step_install_rocm
-    step_configure_env
+    if should_use_therock "$ROCM_VERSION"; then
+        # TheRock installation flow
+        step_prerequisites
+        step_ssh_config
+        step_lock_kernel
+        step_therock_prerequisites
+        if [[ "$THEROCK_INSTALL_METHOD" == "tarball" ]]; then
+            step_therock_install_tarball
+        else
+            step_therock_install_pip
+        fi
+        step_therock_driver
+        step_therock_configure_env
+    else
+        # Traditional installation flow
+        step_prerequisites
+        step_ssh_config
+        step_lock_kernel
+        step_install_amdgpu
+        step_install_rocm
+        step_configure_env
+    fi
 
     verify_installation
 
