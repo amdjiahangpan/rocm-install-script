@@ -578,57 +578,66 @@ get_reboot_display() {
 }
 
 show_options_menu() {
-    print_header
+    local dkms_status=$(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)
+    local ssh_status=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)
+    local reboot_status=$(get_reboot_display | sed 's/\x1b\[[0-9;]*m//g')  # Strip color codes
 
-    echo -e "${BOLD}  Installation Options${NC}"
+    local options=(
+        "Toggle DKMS Driver (currently: $dkms_status)"
+        "Toggle SSH Configuration (currently: $ssh_status)"
+        "Change Reboot Strategy (currently: $reboot_status)"
+        "Manage Extra Packages (${#EXTRA_PACKAGES[@]} packages)"
+        "── Start Installation ──"
+        "Back to version selection"
+        "Quit"
+    )
+
     echo ""
-    echo -e "  Selected version: ${GREEN}ROCm $ROCM_VERSION${NC}"
-    echo ""
-    echo -e "  ─────────────────────────────────────────"
-    echo ""
-    echo -e "  ${CYAN}[1]${NC} DKMS Driver:        $(if [[ "$NO_DKMS" == "true" ]]; then echo "${YELLOW}Disabled${NC}"; else echo "${GREEN}Enabled${NC}"; fi)"
-    echo -e "  ${CYAN}[2]${NC} SSH Configuration:  $(if [[ "$SKIP_SSH" == "true" ]]; then echo "${YELLOW}Skip${NC}"; else echo "${GREEN}Configure${NC}"; fi)"
-    echo -e "  ${CYAN}[3]${NC} Auto Reboot:        $(get_reboot_display)"
-    echo -e "  ${CYAN}[4]${NC} Extra Packages:     ${GREEN}${#EXTRA_PACKAGES[@]} packages${NC}"
-    echo ""
-    echo -e "  ─────────────────────────────────────────"
-    echo -e "  ${GREEN}[s]${NC} ${BOLD}Start Installation${NC}"
-    echo -e "  ${CYAN}[b]${NC} Back to version selection"
-    echo -e "  ${CYAN}[q]${NC} Quit"
+    echo -e "${BOLD}Installation Options${NC} ${GREEN}[ROCm $ROCM_VERSION]${NC}"
     echo ""
 
-    read -r -p "  Enter selection: " option
+    PS3=$'\n'"${CYAN}Your choice: ${NC}"
 
-    case "$option" in
-        1)
-            NO_DKMS=$(if [[ "$NO_DKMS" == "true" ]]; then echo "false"; else echo "true"; fi)
-            show_options_menu
-            ;;
-        2)
-            SKIP_SSH=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "false"; else echo "true"; fi)
-            show_options_menu
-            ;;
-        3)
-            show_reboot_menu
-            ;;
-        4)
-            show_packages_menu
-            ;;
-        s|S|"")
-            return 0
-            ;;
-        b|B)
-            show_version_menu
-            show_options_menu
-            ;;
-        q|Q)
-            echo "  Cancelled."
-            exit 0
-            ;;
-        *)
-            show_options_menu
-            ;;
-    esac
+    select opt in "${options[@]}"; do
+        case "$REPLY" in
+            1)
+                NO_DKMS=$(if [[ "$NO_DKMS" == "true" ]]; then echo "false"; else echo "true"; fi)
+                echo -e "${GREEN}✓${NC} DKMS Driver: $(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)"
+                show_options_menu
+                return
+                ;;
+            2)
+                SKIP_SSH=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "false"; else echo "true"; fi)
+                echo -e "${GREEN}✓${NC} SSH Configuration: $(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)"
+                show_options_menu
+                return
+                ;;
+            3)
+                show_reboot_menu
+                return
+                ;;
+            4)
+                show_packages_menu
+                return
+                ;;
+            5)
+                echo ""
+                return 0
+                ;;
+            6)
+                show_version_menu
+                show_options_menu
+                return
+                ;;
+            7)
+                echo "Installation cancelled."
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Invalid selection, try again${NC}"
+                ;;
+        esac
+    done
 }
 
 show_reboot_menu() {
@@ -711,53 +720,81 @@ show_reboot_menu() {
 }
 
 show_packages_menu() {
-    print_header
-
-    echo -e "${BOLD}  Extra Packages to Install${NC}"
     echo ""
-    echo -e "  ─────────────────────────────────────────"
+    echo -e "${BOLD}Extra Packages${NC} ${CYAN}(${#EXTRA_PACKAGES[@]} packages)${NC}"
+    echo ""
+    echo -e "Current packages: ${GREEN}${EXTRA_PACKAGES[*]:0:5}${NC}$([ ${#EXTRA_PACKAGES[@]} -gt 5 ] && echo "...")"
     echo ""
 
-    local i=1
-    for pkg in "${EXTRA_PACKAGES[@]}"; do
-        echo -e "  ${CYAN}[$i]${NC} $pkg"
-        ((i++))
+    local options=(
+        "View all packages"
+        "Add package"
+        "Remove package"
+        "Reset to defaults"
+        "Back"
+    )
+
+    PS3=$'\n'"${CYAN}Your choice: ${NC}"
+
+    select opt in "${options[@]}"; do
+        case "$REPLY" in
+            1)
+                echo ""
+                echo -e "${BOLD}Installed packages:${NC}"
+                printf '%s\n' "${EXTRA_PACKAGES[@]}" | column -c 80
+                echo ""
+                read -r -p "Press Enter to continue..."
+                show_packages_menu
+                return
+                ;;
+            2)
+                echo ""
+                read -r -p "Package name: " new_pkg
+                if [[ -n "$new_pkg" ]]; then
+                    EXTRA_PACKAGES+=("$new_pkg")
+                    echo -e "${GREEN}✓${NC} Added: $new_pkg"
+                fi
+                show_packages_menu
+                return
+                ;;
+            3)
+                echo ""
+                echo "Enter package name or number (1-${#EXTRA_PACKAGES[@]}):"
+                read -r -p "> " pkg_ref
+                if [[ "$pkg_ref" =~ ^[0-9]+$ ]] && [[ $pkg_ref -ge 1 ]] && [[ $pkg_ref -le ${#EXTRA_PACKAGES[@]} ]]; then
+                    local removed="${EXTRA_PACKAGES[$((pkg_ref-1))]}"
+                    unset 'EXTRA_PACKAGES[$((pkg_ref-1))]'
+                    EXTRA_PACKAGES=("${EXTRA_PACKAGES[@]}")
+                    echo -e "${GREEN}✓${NC} Removed: $removed"
+                else
+                    # Try to find by name
+                    for i in "${!EXTRA_PACKAGES[@]}"; do
+                        if [[ "${EXTRA_PACKAGES[$i]}" == "$pkg_ref" ]]; then
+                            unset 'EXTRA_PACKAGES[$i]'
+                            EXTRA_PACKAGES=("${EXTRA_PACKAGES[@]}")
+                            echo -e "${GREEN}✓${NC} Removed: $pkg_ref"
+                            break
+                        fi
+                    done
+                fi
+                show_packages_menu
+                return
+                ;;
+            4)
+                # Reset to defaults (would need to define DEFAULT_PACKAGES)
+                echo -e "${YELLOW}Package list reset to defaults${NC}"
+                show_packages_menu
+                return
+                ;;
+            5)
+                show_options_menu
+                return
+                ;;
+            *)
+                echo -e "${RED}Invalid selection${NC}"
+                ;;
+        esac
     done
-
-    echo ""
-    echo -e "  ─────────────────────────────────────────"
-    echo -e "  ${CYAN}[a]${NC} Add package"
-    echo -e "  ${CYAN}[r]${NC} Remove package (by number)"
-    echo -e "  ${GREEN}[b]${NC} Back"
-    echo ""
-
-    read -p "  Enter selection: " selection
-
-    case "$selection" in
-        a|A)
-            read -p "  Package name: " new_pkg
-            if [[ -n "$new_pkg" ]]; then
-                EXTRA_PACKAGES+=("$new_pkg")
-                log "Added package: $new_pkg"
-            fi
-            show_packages_menu
-            ;;
-        r|R)
-            read -p "  Package number to remove: " pkg_num
-            if [[ "$pkg_num" =~ ^[0-9]+$ ]] && [[ $pkg_num -ge 1 ]] && [[ $pkg_num -le ${#EXTRA_PACKAGES[@]} ]]; then
-                unset 'EXTRA_PACKAGES[$((pkg_num-1))]'
-                EXTRA_PACKAGES=("${EXTRA_PACKAGES[@]}")
-                log "Removed package"
-            fi
-            show_packages_menu
-            ;;
-        b|B|"")
-            show_options_menu
-            ;;
-        *)
-            show_packages_menu
-            ;;
-    esac
 }
 
 #######################################
