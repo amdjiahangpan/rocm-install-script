@@ -645,174 +645,304 @@ get_reboot_display() {
 show_options_menu() {
     local dkms_status=$(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)
     local ssh_status=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)
-    local reboot_status=$(get_reboot_display | sed 's/\x1b\[[0-9;]*m//g')  # Strip color codes
+    local reboot_status=$(get_reboot_display)
 
-    local options=(
-        "Toggle DKMS Driver (currently: $dkms_status)"
-        "Toggle SSH Configuration (currently: $ssh_status)"
-        "Change Reboot Strategy (currently: $reboot_status)"
-        "Manage Extra Packages (${#EXTRA_PACKAGES[@]} packages)"
-        "── Start Installation ──"
-        "Back to version selection"
-        "Quit"
-    )
+    if [[ "$USE_FZF" == "true" ]]; then
+        # FZF menu
+        local options=(
+            "dkms     Toggle DKMS Driver (currently: $dkms_status)"
+            "ssh      Toggle SSH Configuration (currently: $ssh_status)"
+            "reboot   Change Reboot Strategy (currently: $reboot_status)"
+            "packages Manage Extra Packages (${#EXTRA_PACKAGES[@]} packages)"
+            "start    ▶ Start Installation"
+            "back     ← Back to version selection"
+            "quit     Exit"
+        )
 
-    echo ""
-    echo -e "${BOLD}Installation Options${NC} ${GREEN}[ROCm $ROCM_VERSION]${NC}"
-    echo ""
+        echo ""
+        local selection
+        selection=$(printf '%s\n' "${options[@]}" | fzf \
+            --height=40% \
+            --layout=reverse \
+            --border=rounded \
+            --prompt="Installation Options [ROCm $ROCM_VERSION] ❯ " \
+            --header="Use ↑↓ to navigate, Enter to select" \
+            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
-    PS3=$'\n\033[0;36mYour choice: \033[0m'
+        if [[ -z "$selection" ]]; then
+            echo "Installation cancelled."
+            exit 0
+        fi
 
-    select opt in "${options[@]}"; do
-        case "$REPLY" in
-            1)
+        local action=$(echo "$selection" | awk '{print $1}')
+
+        case "$action" in
+            dkms)
                 NO_DKMS=$(if [[ "$NO_DKMS" == "true" ]]; then echo "false"; else echo "true"; fi)
                 echo -e "${GREEN}✓${NC} DKMS Driver: $(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)"
                 show_options_menu
-                return
                 ;;
-            2)
+            ssh)
                 SKIP_SSH=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "false"; else echo "true"; fi)
                 echo -e "${GREEN}✓${NC} SSH Configuration: $(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)"
                 show_options_menu
-                return
                 ;;
-            3)
+            reboot)
                 show_reboot_menu
-                return
                 ;;
-            4)
+            packages)
                 show_packages_menu
-                return
                 ;;
-            5)
+            start)
                 echo ""
                 return 0
                 ;;
-            6)
+            back)
                 show_version_menu
                 show_options_menu
-                return
                 ;;
-            7)
+            quit)
                 echo "Installation cancelled."
                 exit 0
                 ;;
-            *)
-                echo -e "${RED}Invalid selection, try again${NC}"
-                ;;
         esac
-    done
+    else
+        # Fallback: bash select
+        local options=(
+            "Toggle DKMS Driver (currently: $dkms_status)"
+            "Toggle SSH Configuration (currently: $ssh_status)"
+            "Change Reboot Strategy (currently: $reboot_status)"
+            "Manage Extra Packages (${#EXTRA_PACKAGES[@]} packages)"
+            "── Start Installation ──"
+            "Back to version selection"
+            "Quit"
+        )
+
+        echo ""
+        echo -e "${BOLD}Installation Options${NC} ${GREEN}[ROCm $ROCM_VERSION]${NC}"
+        echo ""
+
+        PS3=$'\n\033[0;36mYour choice: \033[0m'
+
+        select opt in "${options[@]}"; do
+            case "$REPLY" in
+                1)
+                    NO_DKMS=$(if [[ "$NO_DKMS" == "true" ]]; then echo "false"; else echo "true"; fi)
+                    echo -e "${GREEN}✓${NC} DKMS Driver: $(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)"
+                    show_options_menu
+                    return
+                    ;;
+                2)
+                    SKIP_SSH=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "false"; else echo "true"; fi)
+                    echo -e "${GREEN}✓${NC} SSH Configuration: $(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)"
+                    show_options_menu
+                    return
+                    ;;
+                3)
+                    show_reboot_menu
+                    return
+                    ;;
+                4)
+                    show_packages_menu
+                    return
+                    ;;
+                5)
+                    echo ""
+                    return 0
+                    ;;
+                6)
+                    show_version_menu
+                    show_options_menu
+                    return
+                    ;;
+                7)
+                    echo "Installation cancelled."
+                    exit 0
+                    ;;
+                *)
+                    echo -e "${RED}Invalid selection, try again${NC}"
+                    ;;
+            esac
+        done
+    fi
 }
 
 show_reboot_menu() {
-    local options=(
-        "Reboot immediately (Recommended)"
-        "Reboot after 5 minutes"
-        "Reboot after 10 minutes"
-        "Reboot after 30 minutes"
-        "Reboot after 60 minutes"
-        "Skip reboot (manual)"
-        "Custom delay (1-120 min)"
-        "Back"
-    )
+    if [[ "$USE_FZF" == "true" ]]; then
+        # FZF menu
+        local options=(
+            "0      Reboot immediately ← Recommended"
+            "5      Reboot after 5 minutes"
+            "10     Reboot after 10 minutes"
+            "30     Reboot after 30 minutes"
+            "60     Reboot after 60 minutes"
+            "-1     Skip reboot (manual)"
+            "custom Enter custom delay (1-120 min)"
+            "back   ← Back"
+        )
 
-    echo ""
-    echo -e "${BOLD}Reboot Strategy${NC}"
-    echo ""
+        echo ""
+        local selection
+        selection=$(printf '%s\n' "${options[@]}" | fzf \
+            --height=40% \
+            --layout=reverse \
+            --border=rounded \
+            --prompt="Reboot Strategy ❯ " \
+            --header="Use ↑↓ to navigate, Enter to select" \
+            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
-    PS3=$'\n\033[0;36mYour choice: \033[0m'
+        if [[ -z "$selection" ]]; then
+            show_options_menu
+            return
+        fi
 
-    select opt in "${options[@]}"; do
-        case "$REPLY" in
-            1)
+        local delay=$(echo "$selection" | awk '{print $1}')
+
+        if [[ "$delay" == "custom" ]]; then
+            echo ""
+            read -r -p "Enter delay in minutes (1-120): " custom_delay
+            if [[ "$custom_delay" =~ ^[0-9]+$ ]] && [[ $custom_delay -ge 1 ]] && [[ $custom_delay -le 120 ]]; then
+                REBOOT_DELAY=$custom_delay
+                log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
+            else
+                echo -e "${RED}Invalid delay${NC}"
                 REBOOT_DELAY=0
-                log "Reboot strategy: Immediate"
-                show_options_menu
-                return
-                ;;
-            2)
-                REBOOT_DELAY=5
-                log "Reboot strategy: Delayed 5 minutes"
-                show_options_menu
-                return
-                ;;
-            3)
-                REBOOT_DELAY=10
-                log "Reboot strategy: Delayed 10 minutes"
-                show_options_menu
-                return
-                ;;
-            4)
-                REBOOT_DELAY=30
-                log "Reboot strategy: Delayed 30 minutes"
-                show_options_menu
-                return
-                ;;
-            5)
-                REBOOT_DELAY=60
-                log "Reboot strategy: Delayed 60 minutes"
-                show_options_menu
-                return
-                ;;
-            6)
-                REBOOT_DELAY=-1
+                log "Reboot strategy: Immediate (fallback)"
+            fi
+        elif [[ "$delay" == "back" ]]; then
+            show_options_menu
+            return
+        else
+            REBOOT_DELAY=$delay
+            if [[ "$REBOOT_DELAY" -eq -1 ]]; then
                 log "Reboot strategy: Skip"
-                show_options_menu
-                return
-                ;;
-            7)
-                echo ""
-                read -r -p "Enter delay in minutes (1-120): " custom_delay
-                if [[ "$custom_delay" =~ ^[0-9]+$ ]] && [[ $custom_delay -ge 1 ]] && [[ $custom_delay -le 120 ]]; then
-                    REBOOT_DELAY=$custom_delay
-                    log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
+            elif [[ "$REBOOT_DELAY" -eq 0 ]]; then
+                log "Reboot strategy: Immediate"
+            else
+                log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
+            fi
+        fi
+
+        show_options_menu
+    else
+        # Fallback: bash select
+        local options=(
+            "Reboot immediately (Recommended)"
+            "Reboot after 5 minutes"
+            "Reboot after 10 minutes"
+            "Reboot after 30 minutes"
+            "Reboot after 60 minutes"
+            "Skip reboot (manual)"
+            "Custom delay (1-120 min)"
+            "Back"
+        )
+
+        echo ""
+        echo -e "${BOLD}Reboot Strategy${NC}"
+        echo ""
+
+        PS3=$'\n\033[0;36mYour choice: \033[0m'
+
+        select opt in "${options[@]}"; do
+            case "$REPLY" in
+                1)
+                    REBOOT_DELAY=0
+                    log "Reboot strategy: Immediate"
                     show_options_menu
                     return
-                else
-                    echo -e "${RED}Invalid delay, try again${NC}"
-                fi
-                ;;
-            8)
-                show_options_menu
-                return
-                ;;
-            *)
-                echo -e "${RED}Invalid selection, try again${NC}"
-                ;;
-        esac
-    done
+                    ;;
+                2)
+                    REBOOT_DELAY=5
+                    log "Reboot strategy: Delayed 5 minutes"
+                    show_options_menu
+                    return
+                    ;;
+                3)
+                    REBOOT_DELAY=10
+                    log "Reboot strategy: Delayed 10 minutes"
+                    show_options_menu
+                    return
+                    ;;
+                4)
+                    REBOOT_DELAY=30
+                    log "Reboot strategy: Delayed 30 minutes"
+                    show_options_menu
+                    return
+                    ;;
+                5)
+                    REBOOT_DELAY=60
+                    log "Reboot strategy: Delayed 60 minutes"
+                    show_options_menu
+                    return
+                    ;;
+                6)
+                    REBOOT_DELAY=-1
+                    log "Reboot strategy: Skip"
+                    show_options_menu
+                    return
+                    ;;
+                7)
+                    echo ""
+                    read -r -p "Enter delay in minutes (1-120): " custom_delay
+                    if [[ "$custom_delay" =~ ^[0-9]+$ ]] && [[ $custom_delay -ge 1 ]] && [[ $custom_delay -le 120 ]]; then
+                        REBOOT_DELAY=$custom_delay
+                        log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
+                        show_options_menu
+                        return
+                    else
+                        echo -e "${RED}Invalid delay, try again${NC}"
+                    fi
+                    ;;
+                8)
+                    show_options_menu
+                    return
+                    ;;
+                *)
+                    echo -e "${RED}Invalid selection, try again${NC}"
+                    ;;
+            esac
+        done
+    fi
 }
 
 show_packages_menu() {
-    echo ""
-    echo -e "${BOLD}Extra Packages${NC} ${CYAN}(${#EXTRA_PACKAGES[@]} packages)${NC}"
-    echo ""
-    echo -e "Current packages: ${GREEN}${EXTRA_PACKAGES[*]:0:5}${NC}$([ ${#EXTRA_PACKAGES[@]} -gt 5 ] && echo "...")"
-    echo ""
+    if [[ "$USE_FZF" == "true" ]]; then
+        # FZF menu
+        local options=(
+            "view   View all packages"
+            "add    Add package"
+            "remove Remove package"
+            "back   ← Back"
+        )
 
-    local options=(
-        "View all packages"
-        "Add package"
-        "Remove package"
-        "Reset to defaults"
-        "Back"
-    )
+        echo ""
+        local selection
+        selection=$(printf '%s\n' "${options[@]}" | fzf \
+            --height=40% \
+            --layout=reverse \
+            --border=rounded \
+            --prompt="Extra Packages (${#EXTRA_PACKAGES[@]}) ❯ " \
+            --header="Use ↑↓ to navigate, Enter to select" \
+            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
-    PS3=$'\n\033[0;36mYour choice: \033[0m'
+        if [[ -z "$selection" ]]; then
+            show_options_menu
+            return
+        fi
 
-    select opt in "${options[@]}"; do
-        case "$REPLY" in
-            1)
+        local action=$(echo "$selection" | awk '{print $1}')
+
+        case "$action" in
+            view)
                 echo ""
-                echo -e "${BOLD}Installed packages:${NC}"
-                printf '%s\n' "${EXTRA_PACKAGES[@]}" | column -c 80
+                echo -e "${BOLD}Extra packages to install:${NC}"
+                echo ""
+                printf '%s\n' "${EXTRA_PACKAGES[@]}" | column -c 100
                 echo ""
                 read -r -p "Press Enter to continue..."
                 show_packages_menu
-                return
                 ;;
-            2)
+            add)
                 echo ""
                 read -r -p "Package name: " new_pkg
                 if [[ -n "$new_pkg" ]]; then
@@ -820,46 +950,102 @@ show_packages_menu() {
                     echo -e "${GREEN}✓${NC} Added: $new_pkg"
                 fi
                 show_packages_menu
-                return
                 ;;
-            3)
+            remove)
                 echo ""
-                echo "Enter package name or number (1-${#EXTRA_PACKAGES[@]}):"
-                read -r -p "> " pkg_ref
-                if [[ "$pkg_ref" =~ ^[0-9]+$ ]] && [[ $pkg_ref -ge 1 ]] && [[ $pkg_ref -le ${#EXTRA_PACKAGES[@]} ]]; then
-                    local removed="${EXTRA_PACKAGES[$((pkg_ref-1))]}"
-                    unset 'EXTRA_PACKAGES[$((pkg_ref-1))]'
-                    EXTRA_PACKAGES=("${EXTRA_PACKAGES[@]}")
-                    echo -e "${GREEN}✓${NC} Removed: $removed"
-                else
-                    # Try to find by name
+                local pkg_to_remove
+                pkg_to_remove=$(printf '%s\n' "${EXTRA_PACKAGES[@]}" | fzf \
+                    --height=40% \
+                    --layout=reverse \
+                    --border=rounded \
+                    --prompt="Select package to remove ❯ " \
+                    --header="Use ↑↓ to navigate, type to search" \
+                    --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+
+                if [[ -n "$pkg_to_remove" ]]; then
                     for i in "${!EXTRA_PACKAGES[@]}"; do
-                        if [[ "${EXTRA_PACKAGES[$i]}" == "$pkg_ref" ]]; then
+                        if [[ "${EXTRA_PACKAGES[$i]}" == "$pkg_to_remove" ]]; then
                             unset 'EXTRA_PACKAGES[$i]'
                             EXTRA_PACKAGES=("${EXTRA_PACKAGES[@]}")
-                            echo -e "${GREEN}✓${NC} Removed: $pkg_ref"
+                            echo -e "${GREEN}✓${NC} Removed: $pkg_to_remove"
                             break
                         fi
                     done
                 fi
                 show_packages_menu
-                return
                 ;;
-            4)
-                # Reset to defaults (would need to define DEFAULT_PACKAGES)
-                echo -e "${YELLOW}Package list reset to defaults${NC}"
-                show_packages_menu
-                return
-                ;;
-            5)
+            back)
                 show_options_menu
-                return
-                ;;
-            *)
-                echo -e "${RED}Invalid selection${NC}"
                 ;;
         esac
-    done
+    else
+        # Fallback: bash select
+        echo ""
+        echo -e "${BOLD}Extra Packages${NC} ${CYAN}(${#EXTRA_PACKAGES[@]} packages)${NC}"
+        echo ""
+
+        local options=(
+            "View all packages"
+            "Add package"
+            "Remove package"
+            "Back"
+        )
+
+        PS3=$'\n\033[0;36mYour choice: \033[0m'
+
+        select opt in "${options[@]}"; do
+            case "$REPLY" in
+                1)
+                    echo ""
+                    echo -e "${BOLD}Installed packages:${NC}"
+                    printf '%s\n' "${EXTRA_PACKAGES[@]}" | column -c 80
+                    echo ""
+                    read -r -p "Press Enter to continue..."
+                    show_packages_menu
+                    return
+                    ;;
+                2)
+                    echo ""
+                    read -r -p "Package name: " new_pkg
+                    if [[ -n "$new_pkg" ]]; then
+                        EXTRA_PACKAGES+=("$new_pkg")
+                        echo -e "${GREEN}✓${NC} Added: $new_pkg"
+                    fi
+                    show_packages_menu
+                    return
+                    ;;
+                3)
+                    echo ""
+                    echo "Enter package name or number (1-${#EXTRA_PACKAGES[@]}):"
+                    read -r -p "> " pkg_ref
+                    if [[ "$pkg_ref" =~ ^[0-9]+$ ]] && [[ $pkg_ref -ge 1 ]] && [[ $pkg_ref -le ${#EXTRA_PACKAGES[@]} ]]; then
+                        local removed="${EXTRA_PACKAGES[$((pkg_ref-1))]}"
+                        unset 'EXTRA_PACKAGES[$((pkg_ref-1))]'
+                        EXTRA_PACKAGES=("${EXTRA_PACKAGES[@]}")
+                        echo -e "${GREEN}✓${NC} Removed: $removed"
+                    else
+                        for i in "${!EXTRA_PACKAGES[@]}"; do
+                            if [[ "${EXTRA_PACKAGES[$i]}" == "$pkg_ref" ]]; then
+                                unset 'EXTRA_PACKAGES[$i]'
+                                EXTRA_PACKAGES=("${EXTRA_PACKAGES[@]}")
+                                echo -e "${GREEN}✓${NC} Removed: $pkg_ref"
+                                break
+                            fi
+                        done
+                    fi
+                    show_packages_menu
+                    return
+                    ;;
+                4)
+                    show_options_menu
+                    return
+                    ;;
+                *)
+                    echo -e "${RED}Invalid selection${NC}"
+                    ;;
+            esac
+        done
+    fi
 }
 
 #######################################
