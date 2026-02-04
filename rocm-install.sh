@@ -239,6 +239,33 @@ detect_gpu() {
 
 
 #######################################
+# FZF Detection & Installation
+#######################################
+
+# Install fzf if needed for better UI
+install_fzf_if_needed() {
+    if ! command -v fzf &> /dev/null; then
+        echo -e "${CYAN}Installing fzf for better menu experience...${NC}"
+
+        case "$PKG_MGR" in
+            apt)
+                apt-get update -qq && apt-get install -y -qq fzf > /dev/null 2>&1
+                ;;
+            dnf)
+                dnf install -y -q fzf > /dev/null 2>&1
+                ;;
+        esac
+
+        # Verify installation
+        if command -v fzf &> /dev/null; then
+            echo -e "${GREEN}✓${NC} fzf installed"
+        fi
+    fi
+}
+
+USE_FZF=false
+
+#######################################
 # Version Detection & Selection
 #######################################
 
@@ -500,64 +527,102 @@ get_package_url() {
     esac
 }
 
-# Interactive menu for version selection using bash select
+# Interactive menu for version selection
 show_version_menu() {
     local latest=$(get_latest_version)
-    local options=()
 
-    echo ""
-    echo -e "${BOLD}Select ROCm Version to Install${NC}"
-    echo -e "${GREEN}Use number keys or type selection, then press Enter${NC}"
-    echo ""
+    if [[ "$USE_FZF" == "true" ]]; then
+        # FZF menu (modern, arrow-key navigation)
+        local options=()
+        options+=("$latest  ← Latest (Recommended)")
 
-    # Build options array
-    options+=("$latest (Latest - Recommended)")
+        for version in "${AVAILABLE_VERSIONS[@]}"; do
+            if [[ "$version" != "$latest" ]]; then
+                options+=("$version")
+            fi
+        done
 
-    for version in "${AVAILABLE_VERSIONS[@]}"; do
-        if [[ "$version" != "$latest" ]]; then
-            options+=("ROCm $version")
+        options+=("custom  → Enter custom version")
+
+        echo ""
+        local selection
+        selection=$(printf '%s\n' "${options[@]}" | fzf \
+            --height=40% \
+            --layout=reverse \
+            --border=rounded \
+            --prompt="ROCm Version ❯ " \
+            --header="Use ↑↓ arrows to navigate, Enter to select, Esc to quit" \
+            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+
+        if [[ -z "$selection" ]]; then
+            echo "Installation cancelled."
+            exit 0
         fi
-    done
 
-    options+=("Enter custom version")
-    options+=("Quit")
+        # Extract version number
+        if [[ "$selection" == "custom"* ]]; then
+            echo ""
+            read -r -p "Enter ROCm version (e.g., 7.2, 6.4.2): " ROCM_VERSION
+            if [[ -z "$ROCM_VERSION" ]]; then
+                echo -e "${RED}No version entered${NC}"
+                show_version_menu
+                return
+            fi
+        else
+            ROCM_VERSION=$(echo "$selection" | awk '{print $1}')
+        fi
+    else
+        # Fallback: bash select menu
+        local options=()
+        options+=("$latest (Latest - Recommended)")
 
-    PS3=$'\n'"${CYAN}Your choice: ${NC}"
+        for version in "${AVAILABLE_VERSIONS[@]}"; do
+            if [[ "$version" != "$latest" ]]; then
+                options+=("ROCm $version")
+            fi
+        done
 
-    select opt in "${options[@]}"; do
-        case "$REPLY" in
-            1)
-                ROCM_VERSION="$latest"
-                break
-                ;;
-            $((${#options[@]}-1)))
-                # Custom version
-                echo ""
-                read -r -p "Enter ROCm version (e.g., 7.2, 6.4.2): " custom_version
-                if [[ -n "$custom_version" ]]; then
-                    ROCM_VERSION="$custom_version"
+        options+=("Enter custom version")
+        options+=("Quit")
+
+        echo ""
+        echo -e "${BOLD}Select ROCm Version to Install${NC}"
+        echo ""
+
+        PS3=$'\n\033[0;36mYour choice: \033[0m'
+
+        select opt in "${options[@]}"; do
+            case "$REPLY" in
+                1)
+                    ROCM_VERSION="$latest"
                     break
-                else
-                    echo -e "${RED}No version entered, try again${NC}"
-                fi
-                ;;
-            ${#options[@]})
-                # Quit
-                echo "Installation cancelled."
-                exit 0
-                ;;
-            *)
-                if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ $REPLY -gt 1 ]] && [[ $REPLY -lt $((${#options[@]}-1)) ]]; then
-                    # Extract version from "ROCm X.Y.Z" format
-                    local selected="${options[$((REPLY-1))]}"
-                    ROCM_VERSION="${selected#ROCm }"
-                    break
-                else
-                    echo -e "${RED}Invalid selection, try again${NC}"
-                fi
-                ;;
-        esac
-    done
+                    ;;
+                $((${#options[@]}-1)))
+                    echo ""
+                    read -r -p "Enter ROCm version (e.g., 7.2, 6.4.2): " custom_version
+                    if [[ -n "$custom_version" ]]; then
+                        ROCM_VERSION="$custom_version"
+                        break
+                    else
+                        echo -e "${RED}No version entered, try again${NC}"
+                    fi
+                    ;;
+                ${#options[@]})
+                    echo "Installation cancelled."
+                    exit 0
+                    ;;
+                *)
+                    if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ $REPLY -gt 1 ]] && [[ $REPLY -lt $((${#options[@]}-1)) ]]; then
+                        local selected="${options[$((REPLY-1))]}"
+                        ROCM_VERSION="${selected#ROCm }"
+                        break
+                    else
+                        echo -e "${RED}Invalid selection, try again${NC}"
+                    fi
+                    ;;
+            esac
+        done
+    fi
 
     echo ""
     log "Selected ROCm version: $ROCM_VERSION"
@@ -596,7 +661,7 @@ show_options_menu() {
     echo -e "${BOLD}Installation Options${NC} ${GREEN}[ROCm $ROCM_VERSION]${NC}"
     echo ""
 
-    PS3=$'\n'"${CYAN}Your choice: ${NC}"
+    PS3=$'\n\033[0;36mYour choice: \033[0m'
 
     select opt in "${options[@]}"; do
         case "$REPLY" in
@@ -656,7 +721,7 @@ show_reboot_menu() {
     echo -e "${BOLD}Reboot Strategy${NC}"
     echo ""
 
-    PS3=$'\n'"${CYAN}Your choice: ${NC}"
+    PS3=$'\n\033[0;36mYour choice: \033[0m'
 
     select opt in "${options[@]}"; do
         case "$REPLY" in
@@ -734,7 +799,7 @@ show_packages_menu() {
         "Back"
     )
 
-    PS3=$'\n'"${CYAN}Your choice: ${NC}"
+    PS3=$'\n\033[0;36mYour choice: \033[0m'
 
     select opt in "${options[@]}"; do
         case "$REPLY" in
@@ -1275,6 +1340,15 @@ main() {
     # Main flow
     print_header
     detect_system
+
+    # Install fzf for better UI (only in interactive mode)
+    if [[ "$NON_INTERACTIVE" != "true" ]]; then
+        install_fzf_if_needed
+        if command -v fzf &> /dev/null; then
+            USE_FZF=true
+        fi
+    fi
+
     detect_gpu
     fetch_available_versions
 
