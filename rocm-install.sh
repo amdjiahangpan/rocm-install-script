@@ -237,39 +237,6 @@ detect_gpu() {
     fi
 }
 
-#######################################
-# Dialog/UI Detection
-#######################################
-
-# Install whiptail if needed
-install_whiptail_if_needed() {
-    if ! command -v whiptail &> /dev/null && ! command -v dialog &> /dev/null; then
-        echo -e "${CYAN}Installing whiptail for better UI...${NC}"
-
-        case "$PKG_MGR" in
-            apt)
-                apt-get update -qq && apt-get install -y -qq whiptail > /dev/null 2>&1
-                ;;
-            dnf)
-                dnf install -y -q newt > /dev/null 2>&1  # whiptail is provided by newt package on RHEL
-                ;;
-        esac
-    fi
-}
-
-# Detect available dialog tool
-detect_dialog_tool() {
-    if command -v whiptail &> /dev/null; then
-        echo "whiptail"
-    elif command -v dialog &> /dev/null; then
-        echo "dialog"
-    else
-        echo "none"
-    fi
-}
-
-# Initialize dialog tool (will be set properly after detect_system)
-DIALOG_TOOL=""
 
 #######################################
 # Version Detection & Selection
@@ -533,134 +500,67 @@ get_package_url() {
     esac
 }
 
-# Interactive menu for version selection using dialog/whiptail
-show_version_menu_dialog() {
+# Interactive menu for version selection using bash select
+show_version_menu() {
     local latest=$(get_latest_version)
-    local menu_items=()
+    local options=()
 
-    # Build menu items array
-    menu_items+=("$latest" "Latest (Recommended)")
+    echo ""
+    echo -e "${BOLD}Select ROCm Version to Install${NC}"
+    echo -e "${GREEN}Use number keys or type selection, then press Enter${NC}"
+    echo ""
+
+    # Build options array
+    options+=("$latest (Latest - Recommended)")
 
     for version in "${AVAILABLE_VERSIONS[@]}"; do
         if [[ "$version" != "$latest" ]]; then
-            menu_items+=("$version" "ROCm $version")
+            options+=("ROCm $version")
         fi
     done
 
-    menu_items+=("custom" "Enter custom version")
+    options+=("Enter custom version")
+    options+=("Quit")
 
-    local selection
-    if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-        selection=$(whiptail --title "ROCm Installation" \
-            --menu "Select ROCm Version (Use ↑↓ arrows and Enter):" \
-            20 60 12 \
-            "${menu_items[@]}" \
-            3>&1 1>&2 2>&3)
-    else
-        selection=$(dialog --stdout --title "ROCm Installation" \
-            --menu "Select ROCm Version (Use ↑↓ arrows and Enter):" \
-            20 60 12 \
-            "${menu_items[@]}")
-    fi
+    PS3=$'\n'"${CYAN}Your choice: ${NC}"
 
-    local exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then
-        echo "Installation cancelled."
-        exit 0
-    fi
-
-    if [[ "$selection" == "custom" ]]; then
-        if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-            ROCM_VERSION=$(whiptail --title "Custom Version" \
-                --inputbox "Enter ROCm version (e.g., 7.2, 6.4.2):" \
-                10 60 \
-                3>&1 1>&2 2>&3)
-        else
-            ROCM_VERSION=$(dialog --stdout --title "Custom Version" \
-                --inputbox "Enter ROCm version (e.g., 7.2, 6.4.2):" \
-                10 60)
-        fi
-
-        if [[ -z "$ROCM_VERSION" ]]; then
-            error "No version specified"
-        fi
-    else
-        ROCM_VERSION="$selection"
-    fi
-
-    clear
-    log "Selected ROCm version: $ROCM_VERSION"
-}
-
-# Fallback: Interactive menu for version selection (text-based)
-show_version_menu_text() {
-    print_header
-
-    echo -e "${BOLD}  Select ROCm Version to Install${NC}"
-    echo ""
-    echo -e "  ─────────────────────────────────────────"
-    echo ""
-
-    local latest=$(get_latest_version)
-
-    # Option 0: Latest (recommended)
-    echo -e "  ${GREEN}[0]${NC} ${BOLD}Latest ($latest)${NC} ${GREEN}← Recommended${NC}"
-    echo ""
-
-    # List available versions
-    local i=1
-    for version in "${AVAILABLE_VERSIONS[@]}"; do
-        if [[ "$version" == "$latest" ]]; then
-            echo -e "  ${CYAN}[$i]${NC} ROCm $version (Latest)"
-        else
-            echo -e "  ${CYAN}[$i]${NC} ROCm $version"
-        fi
-        ((i++))
+    select opt in "${options[@]}"; do
+        case "$REPLY" in
+            1)
+                ROCM_VERSION="$latest"
+                break
+                ;;
+            $((${#options[@]}-1)))
+                # Custom version
+                echo ""
+                read -r -p "Enter ROCm version (e.g., 7.2, 6.4.2): " custom_version
+                if [[ -n "$custom_version" ]]; then
+                    ROCM_VERSION="$custom_version"
+                    break
+                else
+                    echo -e "${RED}No version entered, try again${NC}"
+                fi
+                ;;
+            ${#options[@]})
+                # Quit
+                echo "Installation cancelled."
+                exit 0
+                ;;
+            *)
+                if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ $REPLY -gt 1 ]] && [[ $REPLY -lt $((${#options[@]}-1)) ]]; then
+                    # Extract version from "ROCm X.Y.Z" format
+                    local selected="${options[$((REPLY-1))]}"
+                    ROCM_VERSION="${selected#ROCm }"
+                    break
+                else
+                    echo -e "${RED}Invalid selection, try again${NC}"
+                fi
+                ;;
+        esac
     done
 
     echo ""
-    echo -e "  ─────────────────────────────────────────"
-    echo -e "  ${CYAN}[c]${NC} Custom version"
-    echo -e "  ${CYAN}[q]${NC} Quit"
-    echo ""
-
-    read -r -p "  Enter selection [0-$((i-1)), c, q]: " selection
-
-    case "$selection" in
-        0|"")
-            ROCM_VERSION="$latest"
-            ;;
-        [1-9]|[1-9][0-9])
-            if [[ $selection -le ${#AVAILABLE_VERSIONS[@]} ]]; then
-                ROCM_VERSION="${AVAILABLE_VERSIONS[$((selection-1))]}"
-            else
-                error "Invalid selection"
-            fi
-            ;;
-        c|C)
-            read -r -p "  Enter version (e.g., 7.2, 6.4.2): " custom_version
-            ROCM_VERSION="$custom_version"
-            ;;
-        q|Q)
-            echo "  Cancelled."
-            exit 0
-            ;;
-        *)
-            error "Invalid selection: $selection"
-            ;;
-    esac
-
-    echo ""
     log "Selected ROCm version: $ROCM_VERSION"
-}
-
-# Main version menu dispatcher
-show_version_menu() {
-    if [[ "$DIALOG_TOOL" != "none" ]]; then
-        show_version_menu_dialog
-    else
-        show_version_menu_text
-    fi
 }
 
 #######################################
@@ -731,138 +631,83 @@ show_options_menu() {
     esac
 }
 
-show_reboot_menu_dialog() {
-    local menu_items=()
-    local current_delay=$REBOOT_DELAY
-
-    # Build radiolist items
-    menu_items+=("0" "Reboot immediately" "$([ "$current_delay" -eq 0 ] && echo "ON" || echo "OFF")")
-    menu_items+=("5" "Reboot after 5 minutes" "$([ "$current_delay" -eq 5 ] && echo "ON" || echo "OFF")")
-    menu_items+=("10" "Reboot after 10 minutes" "$([ "$current_delay" -eq 10 ] && echo "ON" || echo "OFF")")
-    menu_items+=("30" "Reboot after 30 minutes" "$([ "$current_delay" -eq 30 ] && echo "ON" || echo "OFF")")
-    menu_items+=("60" "Reboot after 60 minutes" "$([ "$current_delay" -eq 60 ] && echo "ON" || echo "OFF")")
-    menu_items+=("-1" "Skip reboot (manual)" "$([ "$current_delay" -eq -1 ] && echo "ON" || echo "OFF")")
-    menu_items+=("custom" "Custom delay (1-120 min)" "OFF")
-
-    local selection
-    if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-        selection=$(whiptail --title "Reboot Strategy" \
-            --radiolist "Choose reboot option (Use ↑↓ arrows, Space to select):" \
-            18 60 7 \
-            "${menu_items[@]}" \
-            3>&1 1>&2 2>&3)
-    else
-        selection=$(dialog --stdout --title "Reboot Strategy" \
-            --radiolist "Choose reboot option (Use ↑↓ arrows, Space to select):" \
-            18 60 7 \
-            "${menu_items[@]}")
-    fi
-
-    local exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then
-        # User cancelled, go back
-        show_options_menu
-        return
-    fi
-
-    if [[ "$selection" == "custom" ]]; then
-        local custom_delay
-        if [[ "$DIALOG_TOOL" == "whiptail" ]]; then
-            custom_delay=$(whiptail --title "Custom Delay" \
-                --inputbox "Enter delay in minutes (1-120):" \
-                10 60 \
-                3>&1 1>&2 2>&3)
-        else
-            custom_delay=$(dialog --stdout --title "Custom Delay" \
-                --inputbox "Enter delay in minutes (1-120):" \
-                10 60)
-        fi
-
-        if [[ "$custom_delay" =~ ^[0-9]+$ ]] && [[ $custom_delay -ge 1 ]] && [[ $custom_delay -le 120 ]]; then
-            REBOOT_DELAY=$custom_delay
-            log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
-        else
-            REBOOT_DELAY=0
-            log "Invalid delay. Using immediate reboot."
-        fi
-    else
-        REBOOT_DELAY=$selection
-        if [[ "$REBOOT_DELAY" -eq -1 ]]; then
-            log "Reboot strategy: Skip"
-        elif [[ "$REBOOT_DELAY" -eq 0 ]]; then
-            log "Reboot strategy: Immediate"
-        else
-            log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
-        fi
-    fi
-
-    clear
-    show_options_menu
-}
-
-show_reboot_menu_text() {
-    print_header
-
-    echo -e "${BOLD}  Reboot Strategy${NC}"
-    echo ""
-    echo -e "  ─────────────────────────────────────────"
-    echo ""
-    echo -e "  ${GREEN}[0]${NC} ${BOLD}Reboot immediately${NC} ${GREEN}← Default${NC}"
-    echo -e "  ${CYAN}[5]${NC} Reboot after 5 minutes"
-    echo -e "  ${CYAN}[10]${NC} Reboot after 10 minutes"
-    echo -e "  ${CYAN}[30]${NC} Reboot after 30 minutes"
-    echo -e "  ${CYAN}[60]${NC} Reboot after 60 minutes"
-    echo -e "  ${YELLOW}[n]${NC} Skip reboot (manual reboot later)"
-    echo -e "  ${CYAN}[c]${NC} Custom delay (1-120 minutes)"
-    echo ""
-    echo -e "  ─────────────────────────────────────────"
-    echo -e "  ${CYAN}[b]${NC} Back"
-    echo ""
-
-    read -r -p "  Enter selection: " reboot_option
-
-    case "$reboot_option" in
-        0|"")
-            REBOOT_DELAY=0
-            log "Reboot strategy: Immediate"
-            show_options_menu
-            ;;
-        5|10|30|60)
-            REBOOT_DELAY=$reboot_option
-            log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
-            show_options_menu
-            ;;
-        n|N)
-            REBOOT_DELAY=-1
-            log "Reboot strategy: Skip"
-            show_options_menu
-            ;;
-        c|C)
-            read -r -p "  Enter delay in minutes (1-120): " custom_delay
-            if [[ "$custom_delay" =~ ^[0-9]+$ ]] && [[ $custom_delay -ge 1 ]] && [[ $custom_delay -le 120 ]]; then
-                REBOOT_DELAY=$custom_delay
-                log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
-            else
-                warn "Invalid delay. Using immediate reboot."
-                REBOOT_DELAY=0
-            fi
-            show_options_menu
-            ;;
-        b|B)
-            show_options_menu
-            ;;
-        *)
-            show_reboot_menu_text
-            ;;
-    esac
-}
-
 show_reboot_menu() {
-    if [[ "$DIALOG_TOOL" != "none" ]]; then
-        show_reboot_menu_dialog
-    else
-        show_reboot_menu_text
-    fi
+    local options=(
+        "Reboot immediately (Recommended)"
+        "Reboot after 5 minutes"
+        "Reboot after 10 minutes"
+        "Reboot after 30 minutes"
+        "Reboot after 60 minutes"
+        "Skip reboot (manual)"
+        "Custom delay (1-120 min)"
+        "Back"
+    )
+
+    echo ""
+    echo -e "${BOLD}Reboot Strategy${NC}"
+    echo ""
+
+    PS3=$'\n'"${CYAN}Your choice: ${NC}"
+
+    select opt in "${options[@]}"; do
+        case "$REPLY" in
+            1)
+                REBOOT_DELAY=0
+                log "Reboot strategy: Immediate"
+                show_options_menu
+                return
+                ;;
+            2)
+                REBOOT_DELAY=5
+                log "Reboot strategy: Delayed 5 minutes"
+                show_options_menu
+                return
+                ;;
+            3)
+                REBOOT_DELAY=10
+                log "Reboot strategy: Delayed 10 minutes"
+                show_options_menu
+                return
+                ;;
+            4)
+                REBOOT_DELAY=30
+                log "Reboot strategy: Delayed 30 minutes"
+                show_options_menu
+                return
+                ;;
+            5)
+                REBOOT_DELAY=60
+                log "Reboot strategy: Delayed 60 minutes"
+                show_options_menu
+                return
+                ;;
+            6)
+                REBOOT_DELAY=-1
+                log "Reboot strategy: Skip"
+                show_options_menu
+                return
+                ;;
+            7)
+                echo ""
+                read -r -p "Enter delay in minutes (1-120): " custom_delay
+                if [[ "$custom_delay" =~ ^[0-9]+$ ]] && [[ $custom_delay -ge 1 ]] && [[ $custom_delay -le 120 ]]; then
+                    REBOOT_DELAY=$custom_delay
+                    log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
+                    show_options_menu
+                    return
+                else
+                    echo -e "${RED}Invalid delay, try again${NC}"
+                fi
+                ;;
+            8)
+                show_options_menu
+                return
+                ;;
+            *)
+                echo -e "${RED}Invalid selection, try again${NC}"
+                ;;
+        esac
+    done
 }
 
 show_packages_menu() {
@@ -1393,15 +1238,6 @@ main() {
     # Main flow
     print_header
     detect_system
-
-    # Install whiptail for better UI (only in interactive mode)
-    if [[ "$NON_INTERACTIVE" != "true" ]]; then
-        install_whiptail_if_needed
-        DIALOG_TOOL=$(detect_dialog_tool)
-    else
-        DIALOG_TOOL="none"
-    fi
-
     detect_gpu
     fetch_available_versions
 
