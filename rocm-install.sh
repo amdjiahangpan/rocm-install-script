@@ -2590,7 +2590,7 @@ main() {
         cat "$gpu_temp_file"
     fi
 
-    # Process version results
+    # Process version results and populate cache
     AVAILABLE_VERSIONS=()
     PRERELEASE_VERSIONS=()
     if [[ -s "$versions_temp_file" ]]; then
@@ -2600,14 +2600,19 @@ main() {
                 local v="${line#PRERELEASE:}"
                 AVAILABLE_VERSIONS+=("$v")
                 PRERELEASE_VERSIONS+=("$v")
+                AMD_REPO_CACHE[$v]="prerelease"
             else
                 AVAILABLE_VERSIONS+=("$line")
+                AMD_REPO_CACHE[$line]="stable"
             fi
         done < "$versions_temp_file"
         echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (${#PRERELEASE_VERSIONS[@]} pre-release)"
     else
         warn "Cannot fetch versions from GitHub. Using cached list."
         AVAILABLE_VERSIONS=("7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
+        for v in "${AVAILABLE_VERSIONS[@]}"; do
+            AMD_REPO_CACHE[$v]="stable"
+        done
         echo -e "  ${GREEN}✓${NC} Using ${#AVAILABLE_VERSIONS[@]} cached versions"
     fi
 
