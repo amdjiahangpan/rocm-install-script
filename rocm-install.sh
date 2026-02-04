@@ -629,6 +629,120 @@ show_version_menu() {
 }
 
 #######################################
+# Main Menu
+#######################################
+
+show_main_menu() {
+    if [[ "$USE_FZF" == "true" ]]; then
+        local latest=$(get_latest_version)
+        local options=(
+            "quick  ⚡ Quick Install (Latest: $latest, recommended defaults)"
+            "custom ⚙  Custom Installation (choose version and options)"
+            "verify ✓  Verify existing installation"
+            "remove ✗  Uninstall ROCm"
+            "quit   Exit"
+        )
+
+        echo ""
+        local selection
+        selection=$(printf '%s\n' "${options[@]}" | fzf \
+            --height=40% \
+            --layout=reverse \
+            --border=rounded \
+            --prompt="ROCm Installer ❯ " \
+            --header="Press Enter for Quick Install, or ↑↓ to choose" \
+            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+
+        if [[ -z "$selection" ]]; then
+            echo "Installation cancelled."
+            exit 0
+        fi
+
+        local action=$(echo "$selection" | awk '{print $1}')
+
+        case "$action" in
+            quick)
+                ROCM_VERSION=$(get_latest_version)
+                echo ""
+                echo -e "${GREEN}Quick Install Mode${NC}"
+                echo -e "Version: ${CYAN}$ROCM_VERSION${NC}"
+                echo -e "DKMS: ${GREEN}Enabled${NC}"
+                echo -e "SSH: ${GREEN}Configure${NC}"
+                echo -e "Reboot: ${GREEN}Immediate${NC}"
+                echo ""
+                return 0
+                ;;
+            custom)
+                show_version_menu
+                show_options_menu
+                return 0
+                ;;
+            verify)
+                verify_installation
+                exit 0
+                ;;
+            remove)
+                do_uninstall
+                exit 0
+                ;;
+            quit)
+                echo "Goodbye!"
+                exit 0
+                ;;
+        esac
+    else
+        # Fallback: bash select
+        local latest=$(get_latest_version)
+        local options=(
+            "⚡ Quick Install (Latest: $latest, recommended defaults)"
+            "⚙  Custom Installation (choose version and options)"
+            "✓  Verify existing installation"
+            "✗  Uninstall ROCm"
+            "Exit"
+        )
+
+        echo ""
+        echo -e "${BOLD}ROCm Installer${NC}"
+        echo ""
+
+        PS3=$'\n\033[0;36mYour choice [Enter for Quick Install]: \033[0m'
+
+        select opt in "${options[@]}"; do
+            case "$REPLY" in
+                ""|1)
+                    ROCM_VERSION=$(get_latest_version)
+                    echo ""
+                    echo -e "${GREEN}Quick Install Mode${NC}"
+                    echo -e "Version: ${CYAN}$ROCM_VERSION${NC}"
+                    echo ""
+                    return 0
+                    ;;
+                2)
+                    show_version_menu
+                    show_options_menu
+                    return 0
+                    ;;
+                3)
+                    verify_installation
+                    exit 0
+                    ;;
+                4)
+                    do_uninstall
+                    exit 0
+                    ;;
+                5)
+                    echo "Goodbye!"
+                    exit 0
+                    ;;
+                *)
+                    echo -e "${RED}Invalid selection${NC}"
+                    ;;
+            esac
+        done
+    fi
+}
+
+#######################################
 # Installation Options Menu
 #######################################
 
@@ -1538,13 +1652,12 @@ main() {
     detect_gpu
     fetch_available_versions
 
-    # Version selection
+    # Interactive mode: show main menu
     if [[ "$USE_LATEST" == "true" ]]; then
         ROCM_VERSION=$(get_latest_version)
         log "Using latest version: $ROCM_VERSION"
     elif [[ -z "$ROCM_VERSION" ]] && [[ "$NON_INTERACTIVE" != "true" ]]; then
-        show_version_menu
-        show_options_menu
+        show_main_menu
     elif [[ -z "$ROCM_VERSION" ]]; then
         ROCM_VERSION=$(get_latest_version)
     fi
