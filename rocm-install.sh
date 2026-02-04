@@ -543,6 +543,7 @@ show_version_menu() {
         done
 
         options+=("custom  → Enter custom version")
+        options+=("back    ← Back to main menu")
 
         echo ""
         local selection
@@ -551,7 +552,7 @@ show_version_menu() {
             --layout=reverse \
             --border=rounded \
             --prompt="ROCm Version ❯ " \
-            --header="Use ↑↓ arrows to navigate, Enter to select, Esc to quit" \
+            --header="Use ↑↓ arrows to navigate, Enter to select" \
             --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
         if [[ -z "$selection" ]]; then
@@ -560,7 +561,10 @@ show_version_menu() {
         fi
 
         # Extract version number
-        if [[ "$selection" == "custom"* ]]; then
+        if [[ "$selection" == "back"* ]]; then
+            show_main_menu
+            return
+        elif [[ "$selection" == "custom"* ]]; then
             echo ""
             read -r -p "Enter ROCm version (e.g., 7.2, 6.4.2): " ROCM_VERSION
             if [[ -z "$ROCM_VERSION" ]]; then
@@ -583,6 +587,7 @@ show_version_menu() {
         done
 
         options+=("Enter custom version")
+        options+=("Back to main menu")
         options+=("Quit")
 
         echo ""
@@ -597,7 +602,8 @@ show_version_menu() {
                     ROCM_VERSION="$latest"
                     break
                     ;;
-                $((${#options[@]}-1)))
+                $((${#options[@]}-2)))
+                    # Enter custom version
                     echo ""
                     read -r -p "Enter ROCm version (e.g., 7.2, 6.4.2): " custom_version
                     if [[ -n "$custom_version" ]]; then
@@ -607,12 +613,17 @@ show_version_menu() {
                         echo -e "${RED}No version entered, try again${NC}"
                     fi
                     ;;
+                $((${#options[@]}-1)))
+                    # Back to main menu
+                    show_main_menu
+                    return
+                    ;;
                 ${#options[@]})
                     echo "Installation cancelled."
                     exit 0
                     ;;
                 *)
-                    if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ $REPLY -gt 1 ]] && [[ $REPLY -lt $((${#options[@]}-1)) ]]; then
+                    if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ $REPLY -gt 1 ]] && [[ $REPLY -lt $((${#options[@]}-2)) ]]; then
                         local selected="${options[$((REPLY-1))]}"
                         ROCM_VERSION="${selected#ROCm }"
                         break
@@ -769,7 +780,8 @@ show_options_menu() {
             "reboot   Change Reboot Strategy (currently: $reboot_status)"
             "packages Manage Extra Packages (${#EXTRA_PACKAGES[@]} packages)"
             "start    ▶ Start Installation"
-            "back     ← Back to version selection"
+            "version  ← Change version (currently: $ROCM_VERSION)"
+            "main     ← Back to main menu"
             "quit     Exit"
         )
 
@@ -811,9 +823,13 @@ show_options_menu() {
                 echo ""
                 return 0
                 ;;
-            back)
+            version)
                 show_version_menu
                 show_options_menu
+                ;;
+            main)
+                show_main_menu
+                return
                 ;;
             quit)
                 echo "Installation cancelled."
@@ -828,7 +844,8 @@ show_options_menu() {
             "Change Reboot Strategy (currently: $reboot_status)"
             "Manage Extra Packages (${#EXTRA_PACKAGES[@]} packages)"
             "── Start Installation ──"
-            "Back to version selection"
+            "Change version (currently: $ROCM_VERSION)"
+            "Back to main menu"
             "Quit"
         )
 
@@ -870,6 +887,10 @@ show_options_menu() {
                     return
                     ;;
                 7)
+                    show_main_menu
+                    return
+                    ;;
+                8)
                     echo "Installation cancelled."
                     exit 0
                     ;;
