@@ -540,6 +540,7 @@ is_prerelease() {
 }
 
 # Check single version against AMD repo (with output)
+# Always returns 0, check AMD_REPO_CACHE for result
 check_version_availability() {
     local version="$1"
 
@@ -547,9 +548,8 @@ check_version_availability() {
     if [[ -n "${AMD_REPO_CACHE[$version]+x}" ]]; then
         if [[ "${AMD_REPO_CACHE[$version]}" == "prerelease" ]]; then
             echo -e "  ${YELLOW}!${NC} Version ${version} is a pre-release"
-            return 0
         fi
-        return 1
+        return 0
     fi
 
     echo -e "  Checking version availability..."
@@ -584,7 +584,7 @@ check_version_availability() {
         fi
     fi
     AMD_REPO_CACHE[$version]="stable"
-    return 1
+    return 0
 }
 
 # Batch check versions against AMD repo (parallel)
@@ -2634,10 +2634,9 @@ main() {
     fi
 
     # Handle TheRock mode for pre-release versions
-    # If version specified via --version and not in cache, check it
+    # If version specified via --version and not in cache, verify it
     if [[ -z "${AMD_REPO_CACHE[$ROCM_VERSION]+x}" ]]; then
-        # Version not from GitHub list, assume stable unless check fails
-        AMD_REPO_CACHE[$ROCM_VERSION]="stable"
+        check_version_availability "$ROCM_VERSION"
     fi
 
     if should_use_therock "$ROCM_VERSION" && [[ "$THEROCK_MODE" != "true" ]]; then
