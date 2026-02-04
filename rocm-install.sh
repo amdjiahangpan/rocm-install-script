@@ -2338,7 +2338,11 @@ do_uninstall() {
     local has_therock_venv=false
     local has_therock_tarball=false
 
-    if dpkg -l 2>/dev/null | grep -q "rocm\|amdgpu" || rpm -qa 2>/dev/null | grep -q "rocm\|amdgpu"; then
+    # Check for amdgpu-install package specifically (not generic amdgpu driver)
+    if dpkg -l amdgpu-install 2>/dev/null | grep -q "^ii" || rpm -q amdgpu-install >/dev/null 2>&1; then
+        has_traditional=true
+    # Also check for rocm-core as indicator of traditional install
+    elif dpkg -l rocm-core 2>/dev/null | grep -q "^ii" || rpm -q rocm-core >/dev/null 2>&1; then
         has_traditional=true
     fi
     if [[ -d "${THEROCK_VENV_PATH}" ]]; then
