@@ -14,10 +14,24 @@ A one-click installation script for AMD ROCm platform that supports multiple ver
 
 ## Quick Start
 
+### One-Line Installation (Recommended)
+
 ```bash
-# Download and run
+# Install latest ROCm version
+curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest
+
+# Or download first, then run
+wget https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh
+chmod +x rocm-install.sh
+sudo ./rocm-install.sh
+```
+
+### Clone Repository (For Development)
+
+```bash
 git clone https://github.com/amdjiahangpan/rocm-install-script.git
 cd rocm-install-script
+git checkout unified-installer
 sudo ./rocm-install.sh
 ```
 
@@ -40,28 +54,33 @@ This will show an interactive menu where you can:
 sudo ./rocm-install.sh [options]
 
 Options:
-  --version VERSION    Install specific ROCm version (e.g., 7.2, 6.4.2)
-  --latest             Install latest available version
-  --skip-ssh           Skip SSH configuration
-  --skip-reboot        Don't reboot after installation
-  --verify-only        Only verify existing installation
-  --uninstall          Remove ROCm
-  --no-dkms            Skip DKMS driver (use pre-built)
-  --non-interactive    Run without prompts
-  --help               Show help message
+  --version VERSION      Install specific ROCm version (e.g., 7.2, 6.4.2)
+  --latest               Install latest available version
+  --skip-ssh             Skip SSH configuration
+  --skip-reboot          Skip reboot after installation
+  --reboot-delay MIN     Delay reboot for MIN minutes (0=immediate, default: 0)
+  --verify-only          Only verify existing installation
+  --uninstall            Remove ROCm
+  --no-dkms              Skip DKMS driver (use pre-built)
+  --non-interactive      Run without prompts
+  --help                 Show help message
 ```
 
 ### Examples
 
 ```bash
-# Interactive installation
-sudo ./rocm-install.sh
+# Interactive installation with menu
+wget https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh
+sudo bash rocm-install.sh
 
-# Install latest version automatically
-sudo ./rocm-install.sh --latest
+# One-line: Install latest version
+curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest
 
-# Install specific version
-sudo ./rocm-install.sh --version 7.2
+# One-line: Install specific version
+curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --version 7.2
+
+# One-line: Install with 10-minute delayed reboot
+curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest --reboot-delay 10
 
 # Install without DKMS (for newer kernels)
 sudo ./rocm-install.sh --latest --no-dkms
@@ -72,8 +91,8 @@ sudo ./rocm-install.sh --verify-only
 # Uninstall
 sudo ./rocm-install.sh --uninstall
 
-# Automated installation (for scripts)
-sudo ./rocm-install.sh --latest --non-interactive --skip-reboot
+# Automated installation for scripts (no interactive prompts)
+curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest --non-interactive --skip-reboot
 ```
 
 ## Supported Configurations
