@@ -2111,9 +2111,36 @@ verify_installation() {
     draw_box "Verifying Installation"
     echo ""
 
-    export PATH=$PATH:/opt/rocm/bin
-    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/lib64
+    # Detect installation type and set up environment accordingly
+    local install_type="unknown"
 
+    if [[ -d "${THEROCK_VENV_PATH}" ]] && [[ -f "${THEROCK_VENV_PATH}/bin/activate" ]]; then
+        install_type="therock-venv"
+        echo -e "  Installation type: ${CYAN}TheRock (Python venv)${NC}"
+        # shellcheck source=/dev/null
+        source "${THEROCK_VENV_PATH}/bin/activate" 2>/dev/null || true
+    elif [[ -d "/opt/rocm" ]]; then
+        if [[ -L "/opt/rocm" ]]; then
+            local target
+            target=$(readlink -f /opt/rocm)
+            if [[ "$target" == *"rocm-"* ]]; then
+                install_type="therock-tarball"
+                echo -e "  Installation type: ${CYAN}TheRock (tarball)${NC}"
+            else
+                install_type="traditional"
+                echo -e "  Installation type: ${CYAN}Traditional (amdgpu-install)${NC}"
+            fi
+        else
+            install_type="traditional"
+            echo -e "  Installation type: ${CYAN}Traditional (amdgpu-install)${NC}"
+        fi
+        export PATH=$PATH:/opt/rocm/bin
+        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/lib64
+    else
+        echo -e "  ${YELLOW}No ROCm installation detected${NC}"
+    fi
+
+    echo ""
     local all_pass=true
 
     # rocminfo
@@ -2151,9 +2178,16 @@ verify_installation() {
 
     echo ""
     if [[ "$all_pass" == "true" ]]; then
-        echo -e "  ${GREEN}✓${NC} Verification complete"
+        echo -e "  ${GREEN}✓${NC} Verification complete (${install_type})"
     else
         echo -e "  ${YELLOW}!${NC} Some checks failed - reboot may be required"
+    fi
+
+    # Show activation hint for TheRock venv
+    if [[ "$install_type" == "therock-venv" ]]; then
+        echo ""
+        echo -e "  ${CYAN}Note: To use ROCm in new shells, run:${NC}"
+        echo -e "  ${BOLD}source ${THEROCK_VENV_PATH}/bin/activate${NC}"
     fi
 }
 
@@ -2167,27 +2201,99 @@ do_uninstall() {
     echo -e "${BOLD}  Uninstall ROCm${NC}"
     echo ""
 
-    read -p "  Are you sure? (y/N): " -n 1 -r
+    # Detect installation types
+    local has_traditional=false
+    local has_therock_venv=false
+    local has_therock_tarball=false
+
+    if dpkg -l 2>/dev/null | grep -q "rocm\|amdgpu" || rpm -qa 2>/dev/null | grep -q "rocm\|amdgpu"; then
+        has_traditional=true
+    fi
+    if [[ -d "${THEROCK_VENV_PATH}" ]]; then
+        has_therock_venv=true
+    fi
+    if [[ -d "/opt/rocm-therock" ]] || ls /opt/rocm-[0-9]* >/dev/null 2>&1; then
+        has_therock_tarball=true
+    fi
+
+    echo -e "  Detected installations:"
+    [[ "$has_traditional" == "true" ]] && echo -e "    ${CYAN}•${NC} Traditional (amdgpu-install packages)"
+    [[ "$has_therock_venv" == "true" ]] && echo -e "    ${CYAN}•${NC} TheRock venv (${THEROCK_VENV_PATH})"
+    [[ "$has_therock_tarball" == "true" ]] && echo -e "    ${CYAN}•${NC} TheRock tarball (/opt/rocm-*)"
+
+    if [[ "$has_traditional" == "false" ]] && [[ "$has_therock_venv" == "false" ]] && [[ "$has_therock_tarball" == "false" ]]; then
+        echo -e "    ${YELLOW}No ROCm installation detected${NC}"
+        return 0
+    fi
+
+    echo ""
+    read -p "  Are you sure you want to uninstall? (y/N): " -n 1 -r
     echo
     [[ ! $REPLY =~ ^[Yy]$ ]] && exit 0
 
-    case "$PKG_MGR" in
-        apt)
-            apt-get purge -y 'rocm*' 'amdgpu*' 2>/dev/null || true
-            apt-get autoremove -y
-            ;;
-        dnf)
-            amdgpu-uninstall -y 2>/dev/null || true
-            dnf remove -y 'rocm*' 'amdgpu*' 2>/dev/null || true
-            ;;
-    esac
+    echo ""
 
+    # Uninstall traditional packages
+    if [[ "$has_traditional" == "true" ]]; then
+        echo -e "  Removing traditional ROCm packages..."
+        case "$PKG_MGR" in
+            apt)
+                apt-get purge -y 'rocm*' 'amdgpu*' 2>/dev/null || true
+                apt-get autoremove -y
+                ;;
+            dnf)
+                amdgpu-uninstall -y 2>/dev/null || true
+                dnf remove -y 'rocm*' 'amdgpu*' 2>/dev/null || true
+                ;;
+        esac
+        echo -e "  ${GREEN}✓${NC} Traditional packages removed"
+    fi
+
+    # Uninstall TheRock venv
+    if [[ "$has_therock_venv" == "true" ]]; then
+        echo -e "  Removing TheRock venv (${THEROCK_VENV_PATH})..."
+        rm -rf "${THEROCK_VENV_PATH}"
+        rm -rf /opt/rocm-therock
+        echo -e "  ${GREEN}✓${NC} TheRock venv removed"
+    fi
+
+    # Uninstall TheRock tarball
+    if [[ "$has_therock_tarball" == "true" ]]; then
+        echo -e "  Removing TheRock tarball installations..."
+        # Remove versioned directories
+        for dir in /opt/rocm-[0-9]*; do
+            if [[ -d "$dir" ]]; then
+                echo -e "    Removing $dir..."
+                rm -rf "$dir"
+            fi
+        done
+        # Remove symlink
+        if [[ -L /opt/rocm ]]; then
+            rm -f /opt/rocm
+        fi
+        echo -e "  ${GREEN}✓${NC} TheRock tarball removed"
+    fi
+
+    # Clean up configuration files
+    echo -e "  Cleaning up configuration files..."
     rm -f /etc/ld.so.conf.d/rocm.conf
     rm -f /etc/profile.d/rocm.sh
     rm -f /etc/udev/rules.d/70-amdgpu.rules
     ldconfig
 
-    echo -e "\n  ${GREEN}✓${NC} ROCm uninstalled"
+    # Clean up user bashrc entries
+    local actual_user="${SUDO_USER:-$USER}"
+    local user_home
+    user_home=$(eval echo "~${actual_user}")
+    if [[ -f "$user_home/.bashrc" ]]; then
+        # Remove ROCm entries from bashrc
+        sed -i '/# ROCm/d' "$user_home/.bashrc" 2>/dev/null || true
+        sed -i '/ROCM_PATH/d' "$user_home/.bashrc" 2>/dev/null || true
+        sed -i '/ROCM_VENV/d' "$user_home/.bashrc" 2>/dev/null || true
+        sed -i '/\/opt\/rocm/d' "$user_home/.bashrc" 2>/dev/null || true
+    fi
+
+    echo -e "\n  ${GREEN}✓${NC} ROCm uninstalled completely"
 }
 
 #######################################
