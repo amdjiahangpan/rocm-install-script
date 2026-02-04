@@ -166,6 +166,26 @@ spinner() {
     printf "    \b\b\b\b"
 }
 
+# Show loading animation with message
+show_loading() {
+    local message="$1"
+    local pid="$2"
+    local delay=0.15
+    local spinstr='⣾⣽⣻⢿⡿⣟⣯⣷'
+
+    printf "  %s " "$message"
+    while ps -p "$pid" > /dev/null 2>&1; do
+        for (( i=0; i<${#spinstr}; i++ )); do
+            if ! ps -p "$pid" > /dev/null 2>&1; then
+                break
+            fi
+            printf "\r  %s ${CYAN}%s${NC} " "$message" "${spinstr:$i:1}"
+            sleep $delay
+        done
+    done
+    printf "\r  %s ${GREEN}✓${NC}\n" "$message"
+}
+
 #######################################
 # System Detection
 #######################################
@@ -452,16 +472,22 @@ fetch_available_versions() {
 
     AVAILABLE_VERSIONS=()
     local source_used=""
+    local temp_file
+    temp_file=$(mktemp)
 
-    # Primary source: GitHub releases
-    echo -e "  Checking GitHub releases..."
-    local github_versions
-    if github_versions=$(fetch_versions_from_github); then
+    # Primary source: GitHub releases (with loading animation)
+    fetch_versions_from_github > "$temp_file" 2>/dev/null &
+    local fetch_pid=$!
+    show_loading "Checking GitHub releases..." $fetch_pid
+    wait $fetch_pid
+
+    if [[ -s "$temp_file" ]]; then
         while IFS= read -r v; do
-            AVAILABLE_VERSIONS+=("$v")
-        done <<< "$github_versions"
+            [[ -n "$v" ]] && AVAILABLE_VERSIONS+=("$v")
+        done < "$temp_file"
         source_used="GitHub"
     fi
+    rm -f "$temp_file"
 
     # Fallback: hardcoded list
     if [[ ${#AVAILABLE_VERSIONS[@]} -eq 0 ]]; then
@@ -486,10 +512,21 @@ is_prerelease() {
     # Fallback: check if this version exists in AMD repo (amdgpu-install)
     # If not found, it's likely a pre-release version
     if [[ ${#PRERELEASE_VERSIONS[@]} -eq 0 ]] && [[ -n "$version" ]]; then
+        echo -e "  Checking version availability in AMD repository..."
+
         # Try to check AMD repo for this version
         local check_url="${REPO_BASE_URL}/${version}/"
         local http_code
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$check_url" 2>/dev/null || echo "000")
+        local temp_file
+        temp_file=$(mktemp)
+
+        curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$check_url" > "$temp_file" 2>/dev/null &
+        local curl_pid=$!
+        show_loading "Verifying ROCm ${version}..." $curl_pid
+        wait $curl_pid
+        http_code=$(cat "$temp_file" 2>/dev/null || echo "000")
+        rm -f "$temp_file"
+
         if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
             # Version not found in AMD repo, likely a pre-release
             # Also check major.minor format
@@ -497,8 +534,12 @@ is_prerelease() {
                 local major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
                 http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${REPO_BASE_URL}/${major_minor}/" 2>/dev/null || echo "000")
                 if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
+                    echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release detected)"
                     return 0  # Pre-release
                 fi
+            else
+                echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release detected)"
+                return 0  # Pre-release
             fi
         fi
     fi
