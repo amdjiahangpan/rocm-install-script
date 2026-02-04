@@ -301,6 +301,9 @@ fetch_versions_from_amd_repo() {
     printf '%s\n' "${versions[@]}"
 }
 
+# Pre-release versions (therock-X.Y.Z)
+PRERELEASE_VERSIONS=()
+
 # Fetch versions from GitHub releases
 fetch_versions_from_github() {
     local releases_html
@@ -310,20 +313,46 @@ fetch_versions_from_github() {
         return 1
     fi
 
-    # Parse rocm-X.Y.Z and therock-X.Y.Z tags using compatible grep/sed
     local versions=()
-    local raw_versions
-    raw_versions=$(echo "$releases_html" | grep -oE '(rocm|therock)-[0-9]+\.[0-9]+\.[0-9]+' | sed 's/rocm-//g;s/therock-//g' | sort -Vr | uniq)
+
+    # Parse stable releases (rocm-X.Y.Z)
+    local stable_versions
+    stable_versions=$(echo "$releases_html" | grep -oE 'rocm-[0-9]+\.[0-9]+\.[0-9]+' | sed 's/rocm-//g' | sort -Vr | uniq)
 
     while IFS= read -r version; do
-        # Support 6.x, 7.x, 8.x, etc. (major version >= 6)
+        if [[ -z "$version" ]]; then continue; fi
         if [[ "$version" =~ ^([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
             local major="${BASH_REMATCH[1]}"
             if [[ "$major" -ge 6 ]]; then
                 versions+=("$version")
             fi
         fi
-    done <<< "$raw_versions"
+    done <<< "$stable_versions"
+
+    # Parse pre-release versions (therock-X.Y.Z)
+    local prerelease_versions
+    prerelease_versions=$(echo "$releases_html" | grep -oE 'therock-[0-9]+\.[0-9]+\.[0-9]+' | sed 's/therock-//g' | sort -Vr | uniq)
+
+    while IFS= read -r version; do
+        if [[ -z "$version" ]]; then continue; fi
+        if [[ "$version" =~ ^([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            local major="${BASH_REMATCH[1]}"
+            if [[ "$major" -ge 6 ]]; then
+                # Add to pre-release tracking if not already a stable version
+                local is_stable=false
+                for v in "${versions[@]}"; do
+                    if [[ "$v" == "$version" ]]; then
+                        is_stable=true
+                        break
+                    fi
+                done
+                if [[ "$is_stable" == "false" ]]; then
+                    versions+=("$version")
+                    PRERELEASE_VERSIONS+=("$version")
+                fi
+            fi
+        fi
+    done <<< "$prerelease_versions"
 
     if [[ ${#versions[@]} -eq 0 ]]; then
         return 1
@@ -388,14 +417,30 @@ fetch_available_versions() {
     echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (source: $source_used)"
 }
 
+is_prerelease() {
+    local version="$1"
+    for v in "${PRERELEASE_VERSIONS[@]}"; do
+        if [[ "$v" == "$version" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 get_latest_version() {
-    # Get the latest stable version
+    # Get the latest stable (non-prerelease) version
+    for version in "${AVAILABLE_VERSIONS[@]}"; do
+        if ! is_prerelease "$version"; then
+            echo "$version"
+            return
+        fi
+    done
+    # Fallback if no stable version found
     if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
-        LATEST_VERSION="${AVAILABLE_VERSIONS[0]}"
+        echo "${AVAILABLE_VERSIONS[0]}"
     else
-        LATEST_VERSION="7.2"
+        echo "7.2"
     fi
-    echo "$LATEST_VERSION"
 }
 
 # Fetch package name directly from repository
@@ -541,11 +586,15 @@ show_version_menu() {
     if [[ "$USE_FZF" == "true" ]]; then
         # FZF menu (modern, arrow-key navigation)
         local options=()
-        options+=("$latest  ← Latest (Recommended)")
+        options+=("$latest  ${GREEN}← Latest (Recommended)${NC}")
 
         for version in "${AVAILABLE_VERSIONS[@]}"; do
             if [[ "$version" != "$latest" ]]; then
-                options+=("$version")
+                if is_prerelease "$version"; then
+                    options+=("$version  ${YELLOW}(Pre-release)${NC}")
+                else
+                    options+=("$version")
+                fi
             fi
         done
 
@@ -554,7 +603,7 @@ show_version_menu() {
 
         echo ""
         local selection
-        selection=$(printf '%s\n' "${options[@]}" | fzf \
+        selection=$(for opt in "${options[@]}"; do echo -e "$opt"; done | fzf \
             --ansi \
             --layout=reverse \
             --border=rounded \
@@ -589,7 +638,11 @@ show_version_menu() {
 
         for version in "${AVAILABLE_VERSIONS[@]}"; do
             if [[ "$version" != "$latest" ]]; then
-                options+=("ROCm $version")
+                if is_prerelease "$version"; then
+                    options+=("ROCm $version (Pre-release)")
+                else
+                    options+=("ROCm $version")
+                fi
             fi
         done
 
@@ -632,7 +685,9 @@ show_version_menu() {
                 *)
                     if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ $REPLY -gt 1 ]] && [[ $REPLY -lt $((${#options[@]}-2)) ]]; then
                         local selected="${options[$((REPLY-1))]}"
+                        # Remove "ROCm " prefix and " (Pre-release)" suffix
                         ROCM_VERSION="${selected#ROCm }"
+                        ROCM_VERSION="${ROCM_VERSION% (Pre-release)}"
                         break
                     else
                         echo -e "${RED}Invalid selection, try again${NC}"
@@ -644,6 +699,12 @@ show_version_menu() {
 
     echo ""
     log "Selected ROCm version: $ROCM_VERSION"
+
+    # Show warning for pre-release versions
+    if is_prerelease "$ROCM_VERSION"; then
+        echo -e "${YELLOW}⚠ Warning: $ROCM_VERSION is a pre-release version (therock)${NC}"
+        echo -e "${YELLOW}  Pre-release packages may not be available in AMD repository${NC}"
+    fi
 }
 
 #######################################
