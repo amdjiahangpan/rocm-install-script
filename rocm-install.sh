@@ -497,7 +497,7 @@ fetch_available_versions() {
     fetch_versions_from_github > "$temp_file" 2>/dev/null &
     local fetch_pid=$!
     show_loading "Checking GitHub releases..." $fetch_pid
-    wait $fetch_pid
+    wait $fetch_pid 2>/dev/null || true
 
     if [[ -s "$temp_file" ]]; then
         while IFS= read -r v; do
@@ -562,7 +562,7 @@ check_version_availability() {
     curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$check_url" > "$temp_file" 2>/dev/null &
     local curl_pid=$!
     show_loading "Verifying ROCm ${version}..." $curl_pid
-    wait $curl_pid
+    wait $curl_pid 2>/dev/null || true
     http_code=$(cat "$temp_file" 2>/dev/null || echo "000")
     rm -f "$temp_file"
 
