@@ -2156,19 +2156,21 @@ EOF
 
     if [[ "$THEROCK_INSTALL_METHOD" == "pip" ]]; then
         # Pip/venv environment
+        # NOTE: Do NOT auto-activate venv in profile.d - it breaks GUI login
+        # Users should manually activate: source /opt/rocm-venv/bin/activate
         cat > /etc/profile.d/rocm.sh << EOF
 # ROCm TheRock Environment (Python venv)
+# To use ROCm, run: source ${THEROCK_VENV_PATH}/bin/activate
 export ROCM_VENV="${THEROCK_VENV_PATH}"
-if [[ -f "\${ROCM_VENV}/bin/activate" ]]; then
-    source "\${ROCM_VENV}/bin/activate"
-fi
-export ROCM_PATH=/opt/rocm-therock
+export ROCM_PATH="${THEROCK_VENV_PATH}"
 EOF
 
-        # Library paths for venv
+        # Library paths for venv - be careful not to break system libs
+        # Only add if directory exists
         cat > /etc/ld.so.conf.d/rocm.conf << EOF
-${THEROCK_VENV_PATH}/lib
-${THEROCK_VENV_PATH}/lib64
+# ROCm TheRock libraries
+# ${THEROCK_VENV_PATH}/lib
+# ${THEROCK_VENV_PATH}/lib64
 EOF
     else
         # Tarball environment
@@ -2195,13 +2197,12 @@ EOF
     if [[ -f "$user_home/.bashrc" ]]; then
         if ! grep -q "ROCM" "$user_home/.bashrc"; then
             if [[ "$THEROCK_INSTALL_METHOD" == "pip" ]]; then
+                # Do NOT auto-activate venv - just set environment variable
                 cat >> "$user_home/.bashrc" << EOF
 
 # ROCm TheRock Environment
+# To use ROCm, run: source ${THEROCK_VENV_PATH}/bin/activate
 export ROCM_VENV="${THEROCK_VENV_PATH}"
-if [[ -f "\${ROCM_VENV}/bin/activate" ]]; then
-    source "\${ROCM_VENV}/bin/activate"
-fi
 EOF
             else
                 cat >> "$user_home/.bashrc" << 'EOF'
@@ -2217,9 +2218,14 @@ EOF
 
     echo -e "\n  ${GREEN}✓${NC} TheRock environment configured"
 
-    if [[ "$THEROCK_INSTALL_METHOD" == "pip" ]]; then
-        echo -e "  ${CYAN}Note: Run 'source ${THEROCK_VENV_PATH}/bin/activate' to use ROCm${NC}"
-    fi
+    echo ""
+    echo -e "  ${YELLOW}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${YELLOW}║  Important: To use ROCm TheRock, you must activate it:     ║${NC}"
+    echo -e "  ${YELLOW}║                                                            ║${NC}"
+    echo -e "  ${YELLOW}║  source ${THEROCK_VENV_PATH}/bin/activate                  ║${NC}"
+    echo -e "  ${YELLOW}║                                                            ║${NC}"
+    echo -e "  ${YELLOW}║  Add this to your ~/.bashrc if you want auto-activation.  ║${NC}"
+    echo -e "  ${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}"
 }
 
 #######################################
