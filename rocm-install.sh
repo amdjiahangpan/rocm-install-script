@@ -645,7 +645,7 @@ show_main_menu() {
 
         echo ""
         local selection
-        selection=$(printf '%s\n' "${options[@]}" | fzf \
+        selection=$(for opt in "${options[@]}"; do echo -e "$opt"; done | fzf \
             --ansi \
             --layout=reverse \
             --border=rounded \
