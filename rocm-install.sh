@@ -634,15 +634,21 @@ batch_check_versions_availability() {
     while $running; do
         running=false
         for pid in "${pids[@]}"; do
-            if ps -p "$pid" > /dev/null 2>&1; then
+            if kill -0 "$pid" 2>/dev/null; then
                 running=true
                 break
             fi
         done
         if $running; then
             printf "%s⣾%s\b" "${CYAN}" "${NC}"
-            sleep 0.15
+            sleep 0.1
+            printf "%s⣽%s\b" "${CYAN}" "${NC}"
+            sleep 0.1
         fi
+    done
+    # Ensure all processes are fully finished
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
     done
     printf " %s✓%s\n" "${GREEN}" "${NC}"
 
@@ -2562,17 +2568,21 @@ main() {
     (fetch_versions_from_github > "$versions_temp_file" 2>/dev/null) &
     local versions_pid=$!
 
-    # Show loading for both
+    # Show loading and wait for both to complete
     printf "  Detecting GPU & fetching versions... "
-    while ps -p $gpu_pid > /dev/null 2>&1 || ps -p $versions_pid > /dev/null 2>&1; do
+    while kill -0 $gpu_pid 2>/dev/null || kill -0 $versions_pid 2>/dev/null; do
         printf "%s⣾%s\b" "${CYAN}" "${NC}"
-        sleep 0.15
-        if ! ps -p $gpu_pid > /dev/null 2>&1 && ! ps -p $versions_pid > /dev/null 2>&1; then
-            break
-        fi
+        sleep 0.1
         printf "%s⣽%s\b" "${CYAN}" "${NC}"
-        sleep 0.15
+        sleep 0.1
+        printf "%s⣻%s\b" "${CYAN}" "${NC}"
+        sleep 0.1
+        printf "%s⢿%s\b" "${CYAN}" "${NC}"
+        sleep 0.1
     done
+    # Ensure both processes are fully finished
+    wait $gpu_pid 2>/dev/null || true
+    wait $versions_pid 2>/dev/null || true
     printf " %s✓%s\n" "${GREEN}" "${NC}"
 
     # Process GPU results
