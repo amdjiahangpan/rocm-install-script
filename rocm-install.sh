@@ -2373,12 +2373,21 @@ do_uninstall() {
         echo -e "  Removing traditional ROCm packages..."
         case "$PKG_MGR" in
             apt)
-                apt-get purge -y 'rocm*' 'amdgpu*' 2>/dev/null || true
-                apt-get autoremove -y
+                # Use amdgpu-uninstall if available (preferred method)
+                if command -v amdgpu-uninstall &> /dev/null; then
+                    amdgpu-uninstall -y 2>/dev/null || true
+                fi
+                # Only remove specific ROCm/AMDGPU packages, not GPU drivers needed for desktop
+                apt-get purge -y rocm-core rocm-dev rocm-libs rocm-hip-sdk rocm-ml-sdk 2>/dev/null || true
+                apt-get purge -y amdgpu-install amdgpu-dkms amdgpu-lib 2>/dev/null || true
+                apt-get autoremove -y 2>/dev/null || true
                 ;;
             dnf)
-                amdgpu-uninstall -y 2>/dev/null || true
-                dnf remove -y 'rocm*' 'amdgpu*' 2>/dev/null || true
+                if command -v amdgpu-uninstall &> /dev/null; then
+                    amdgpu-uninstall -y 2>/dev/null || true
+                fi
+                dnf remove -y rocm-core rocm-dev rocm-libs 2>/dev/null || true
+                dnf remove -y amdgpu-install amdgpu-dkms 2>/dev/null || true
                 ;;
         esac
         echo -e "  ${GREEN}✓${NC} Traditional packages removed"
