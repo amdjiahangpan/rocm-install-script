@@ -2229,7 +2229,10 @@ do_uninstall() {
     echo ""
     read -p "  Are you sure you want to uninstall? (y/N): " -n 1 -r
     echo
-    [[ ! $REPLY =~ ^[Yy]$ ]] && exit 0
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "  ${YELLOW}Uninstall cancelled${NC}"
+        return 0
+    fi
 
     echo ""
 
