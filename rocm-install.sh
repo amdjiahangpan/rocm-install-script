@@ -2424,8 +2424,52 @@ main() {
         fi
     fi
 
-    detect_gpu
-    fetch_available_versions
+    # Parallel: detect GPU and fetch versions concurrently
+    echo -e "\n${BOLD}Initializing...${NC}"
+
+    local gpu_temp_file
+    local versions_temp_file
+    gpu_temp_file=$(mktemp)
+    versions_temp_file=$(mktemp)
+
+    # Start background tasks
+    (detect_gpu > "$gpu_temp_file" 2>&1) &
+    local gpu_pid=$!
+    (fetch_versions_from_github > "$versions_temp_file" 2>/dev/null) &
+    local versions_pid=$!
+
+    # Show loading for both
+    printf "  Detecting GPU & fetching versions... "
+    while ps -p $gpu_pid > /dev/null 2>&1 || ps -p $versions_pid > /dev/null 2>&1; do
+        printf "%s⣾%s\b" "${CYAN}" "${NC}"
+        sleep 0.15
+        if ! ps -p $gpu_pid > /dev/null 2>&1 && ! ps -p $versions_pid > /dev/null 2>&1; then
+            break
+        fi
+        printf "%s⣽%s\b" "${CYAN}" "${NC}"
+        sleep 0.15
+    done
+    printf " %s✓%s\n" "${GREEN}" "${NC}"
+
+    # Process GPU results
+    if [[ -s "$gpu_temp_file" ]]; then
+        cat "$gpu_temp_file"
+    fi
+
+    # Process version results
+    AVAILABLE_VERSIONS=()
+    if [[ -s "$versions_temp_file" ]]; then
+        while IFS= read -r v; do
+            [[ -n "$v" ]] && AVAILABLE_VERSIONS+=("$v")
+        done < "$versions_temp_file"
+        echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (source: GitHub)"
+    else
+        warn "Cannot fetch versions from GitHub. Using cached list."
+        AVAILABLE_VERSIONS=("7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
+        echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (source: cached)"
+    fi
+
+    rm -f "$gpu_temp_file" "$versions_temp_file"
 
     # Interactive mode: show main menu
     if [[ "$USE_LATEST" == "true" ]]; then
