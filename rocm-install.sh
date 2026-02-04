@@ -413,6 +413,7 @@ fetch_versions_from_amd_repo() {
 PRERELEASE_VERSIONS=()
 
 # Fetch versions from GitHub releases
+# Output format: VERSION or PRERELEASE:VERSION for pre-release versions
 fetch_versions_from_github() {
     local releases_html
     releases_html=$(curl -sL --connect-timeout 10 "https://github.com/ROCm/ROCm/releases" 2>/dev/null || echo "")
@@ -422,6 +423,7 @@ fetch_versions_from_github() {
     fi
 
     local versions=()
+    local prerelease_list=()
 
     # Parse stable releases (rocm-X.Y.Z)
     local stable_versions
@@ -456,7 +458,7 @@ fetch_versions_from_github() {
                 done
                 if [[ "$is_stable" == "false" ]]; then
                     versions+=("$version")
-                    PRERELEASE_VERSIONS+=("$version")
+                    prerelease_list+=("$version")
                 fi
             fi
         fi
@@ -466,7 +468,21 @@ fetch_versions_from_github() {
         return 1
     fi
 
-    printf '%s\n' "${versions[@]}"
+    # Output versions, marking pre-releases with PRERELEASE: prefix
+    for v in "${versions[@]}"; do
+        local is_prerel=false
+        for p in "${prerelease_list[@]}"; do
+            if [[ "$v" == "$p" ]]; then
+                is_prerel=true
+                break
+            fi
+        done
+        if [[ "$is_prerel" == "true" ]]; then
+            echo "PRERELEASE:$v"
+        else
+            echo "$v"
+        fi
+    done
 }
 
 fetch_available_versions() {
@@ -514,50 +530,60 @@ is_prerelease() {
         fi
     done
 
-    # Check cache first
+    # Check cache
     if [[ -n "${AMD_REPO_CACHE[$version]+x}" ]]; then
         [[ "${AMD_REPO_CACHE[$version]}" == "prerelease" ]] && return 0
         return 1
     fi
 
-    # Fallback: check if this version exists in AMD repo (amdgpu-install)
-    # Only do this check once per version (cached)
-    if [[ ${#PRERELEASE_VERSIONS[@]} -eq 0 ]] && [[ -n "$version" ]]; then
-        echo -e "  Checking version availability in AMD repository..."
+    return 1
+}
 
-        # Try to check AMD repo for this version
-        local check_url="${REPO_BASE_URL}/${version}/"
-        local http_code
-        local temp_file
-        temp_file=$(mktemp)
+# Check single version against AMD repo (with output)
+check_version_availability() {
+    local version="$1"
 
-        curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$check_url" > "$temp_file" 2>/dev/null &
-        local curl_pid=$!
-        show_loading "Verifying ROCm ${version}..." $curl_pid
-        wait $curl_pid
-        http_code=$(cat "$temp_file" 2>/dev/null || echo "000")
-        rm -f "$temp_file"
-
-        if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
-            # Version not found in AMD repo, likely a pre-release
-            # Also check major.minor format
-            if [[ "$version" =~ ^([0-9]+)\.([0-9]+) ]]; then
-                local major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-                http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${REPO_BASE_URL}/${major_minor}/" 2>/dev/null || echo "000")
-                if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
-                    echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release detected)"
-                    AMD_REPO_CACHE[$version]="prerelease"
-                    return 0  # Pre-release
-                fi
-            else
-                echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release detected)"
-                AMD_REPO_CACHE[$version]="prerelease"
-                return 0  # Pre-release
-            fi
+    # Already cached?
+    if [[ -n "${AMD_REPO_CACHE[$version]+x}" ]]; then
+        if [[ "${AMD_REPO_CACHE[$version]}" == "prerelease" ]]; then
+            echo -e "  ${YELLOW}!${NC} Version ${version} is a pre-release"
+            return 0
         fi
-        AMD_REPO_CACHE[$version]="stable"
+        return 1
     fi
 
+    echo -e "  Checking version availability..."
+
+    local check_url="${REPO_BASE_URL}/${version}/"
+    local http_code
+    local temp_file
+    temp_file=$(mktemp)
+
+    curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$check_url" > "$temp_file" 2>/dev/null &
+    local curl_pid=$!
+    show_loading "Verifying ROCm ${version}..." $curl_pid
+    wait $curl_pid
+    http_code=$(cat "$temp_file" 2>/dev/null || echo "000")
+    rm -f "$temp_file"
+
+    if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
+        if [[ "$version" =~ ^([0-9]+)\.([0-9]+) ]]; then
+            local major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${REPO_BASE_URL}/${major_minor}/" 2>/dev/null || echo "000")
+            if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
+                echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release)"
+                AMD_REPO_CACHE[$version]="prerelease"
+                PRERELEASE_VERSIONS+=("$version")
+                return 0
+            fi
+        else
+            echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release)"
+            AMD_REPO_CACHE[$version]="prerelease"
+            PRERELEASE_VERSIONS+=("$version")
+            return 0
+        fi
+    fi
+    AMD_REPO_CACHE[$version]="stable"
     return 1
 }
 
@@ -2550,15 +2576,23 @@ main() {
 
     # Process version results
     AVAILABLE_VERSIONS=()
+    PRERELEASE_VERSIONS=()
     if [[ -s "$versions_temp_file" ]]; then
-        while IFS= read -r v; do
-            [[ -n "$v" ]] && AVAILABLE_VERSIONS+=("$v")
+        while IFS= read -r line; do
+            if [[ -z "$line" ]]; then continue; fi
+            if [[ "$line" == PRERELEASE:* ]]; then
+                local v="${line#PRERELEASE:}"
+                AVAILABLE_VERSIONS+=("$v")
+                PRERELEASE_VERSIONS+=("$v")
+            else
+                AVAILABLE_VERSIONS+=("$line")
+            fi
         done < "$versions_temp_file"
-        echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (source: GitHub)"
+        echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (${#PRERELEASE_VERSIONS[@]} pre-release)"
     else
         warn "Cannot fetch versions from GitHub. Using cached list."
         AVAILABLE_VERSIONS=("7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
-        echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (source: cached)"
+        echo -e "  ${GREEN}✓${NC} Using ${#AVAILABLE_VERSIONS[@]} cached versions"
     fi
 
     rm -f "$gpu_temp_file" "$versions_temp_file"
@@ -2580,6 +2614,11 @@ main() {
 
     # Handle TheRock mode for pre-release versions
     # This catches cases where --version is specified directly (bypassing show_version_menu)
+    # If version not in cache, do a single check now
+    if [[ -z "${AMD_REPO_CACHE[$ROCM_VERSION]+x}" ]] && ! is_prerelease "$ROCM_VERSION"; then
+        check_version_availability "$ROCM_VERSION"
+    fi
+
     if should_use_therock "$ROCM_VERSION" && [[ "$THEROCK_MODE" != "true" ]]; then
         THEROCK_MODE=true
         log "Detected pre-release version, using TheRock installation mode"
