@@ -475,11 +475,34 @@ fetch_available_versions() {
 
 is_prerelease() {
     local version="$1"
+
+    # Check if version is in the pre-release list (populated from GitHub therock- tags)
     for v in "${PRERELEASE_VERSIONS[@]}"; do
         if [[ "$v" == "$version" ]]; then
             return 0
         fi
     done
+
+    # Fallback: check if this version exists in AMD repo (amdgpu-install)
+    # If not found, it's likely a pre-release version
+    if [[ ${#PRERELEASE_VERSIONS[@]} -eq 0 ]] && [[ -n "$version" ]]; then
+        # Try to check AMD repo for this version
+        local check_url="${REPO_BASE_URL}/${version}/"
+        local http_code
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$check_url" 2>/dev/null || echo "000")
+        if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
+            # Version not found in AMD repo, likely a pre-release
+            # Also check major.minor format
+            if [[ "$version" =~ ^([0-9]+)\.([0-9]+) ]]; then
+                local major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+                http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${REPO_BASE_URL}/${major_minor}/" 2>/dev/null || echo "000")
+                if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
+                    return 0  # Pre-release
+                fi
+            fi
+        fi
+    fi
+
     return 1
 }
 
@@ -2262,16 +2285,36 @@ main() {
         ROCM_VERSION=$(get_latest_version)
     fi
 
-    # Handle TheRock mode for non-interactive with pre-release version
-    if [[ "$NON_INTERACTIVE" == "true" ]] && should_use_therock "$ROCM_VERSION"; then
+    # Handle TheRock mode for pre-release versions
+    # This catches cases where --version is specified directly (bypassing show_version_menu)
+    if should_use_therock "$ROCM_VERSION" && [[ "$THEROCK_MODE" != "true" ]]; then
         THEROCK_MODE=true
+        log "Detected pre-release version, using TheRock installation mode"
+
+        # Show TheRock warning
+        echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${YELLOW}║  ⚠  Pre-release Version (TheRock)                            ║${NC}"
+        echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${YELLOW}║  This version uses TheRock installation method:              ║${NC}"
+        echo -e "${YELLOW}║  • pip wheel from repo.amd.com (not amdgpu-install)          ║${NC}"
+        echo -e "${YELLOW}║  • Requires GPU architecture selection                       ║${NC}"
+        echo -e "${YELLOW}║  • Installs to Python virtual environment                    ║${NC}"
+        echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+
         if [[ -z "$GPU_ARCH" ]]; then
-            # Try auto-detection
-            GPU_ARCH=$(detect_gpu_architecture)
-            if [[ -z "$GPU_ARCH" ]]; then
-                error "TheRock requires --gpu-arch parameter (gfx950-dcgpu, gfx94X-dcgpu, or gfx1151)"
+            if [[ "$NON_INTERACTIVE" == "true" ]]; then
+                # Non-interactive: try auto-detection
+                GPU_ARCH=$(detect_gpu_architecture)
+                if [[ -z "$GPU_ARCH" ]]; then
+                    error "TheRock requires --gpu-arch parameter (gfx950-dcgpu, gfx94X-dcgpu, or gfx1151)"
+                fi
+                log "Auto-detected GPU architecture: $GPU_ARCH"
+            else
+                # Interactive: show selection menus
+                show_gpu_arch_menu
+                show_therock_method_menu
             fi
-            log "Auto-detected GPU architecture: $GPU_ARCH"
         fi
     fi
 
