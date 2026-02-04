@@ -547,7 +547,7 @@ show_version_menu() {
         echo ""
         local selection
         selection=$(printf '%s\n' "${options[@]}" | fzf \
-            --height=40% \
+            --ansi \
             --layout=reverse \
             --border=rounded \
             --prompt="ROCm Version ❯ " \
@@ -636,17 +636,17 @@ show_main_menu() {
     if [[ "$USE_FZF" == "true" ]]; then
         local latest=$(get_latest_version)
         local options=(
-            "quick  ⚡ Quick Install (Latest: $latest, recommended defaults)"
-            "custom ⚙  Custom Installation (choose version and options)"
-            "verify ✓  Verify existing installation"
-            "remove ✗  Uninstall ROCm"
+            "quick  ${GREEN}⚡ Quick Install${NC} (Latest: ${CYAN}$latest${NC}, recommended defaults)"
+            "custom ${YELLOW}⚙  Custom Installation${NC} (choose version and options)"
+            "verify ${GREEN}✓  Verify${NC} existing installation"
+            "remove ${RED}✗  Uninstall${NC} ROCm"
             "quit   Exit"
         )
 
         echo ""
         local selection
         selection=$(printf '%s\n' "${options[@]}" | fzf \
-            --height=40% \
+            --ansi \
             --layout=reverse \
             --border=rounded \
             --prompt="ROCm Installer ❯ " \
@@ -776,7 +776,7 @@ show_options_menu() {
         echo ""
         local selection
         selection=$(printf '%s\n' "${options[@]}" | fzf \
-            --height=40% \
+            --ansi \
             --layout=reverse \
             --border=rounded \
             --prompt="Installation Options [ROCm $ROCM_VERSION] ❯ " \
@@ -898,7 +898,7 @@ show_reboot_menu() {
         echo ""
         local selection
         selection=$(printf '%s\n' "${options[@]}" | fzf \
-            --height=40% \
+            --ansi \
             --layout=reverse \
             --border=rounded \
             --prompt="Reboot Strategy ❯ " \
@@ -1032,7 +1032,7 @@ show_packages_menu() {
         echo ""
         local selection
         selection=$(printf '%s\n' "${options[@]}" | fzf \
-            --height=40% \
+            --ansi \
             --layout=reverse \
             --border=rounded \
             --prompt="Extra Packages (${#EXTRA_PACKAGES[@]}) ❯ " \
@@ -1069,7 +1069,7 @@ show_packages_menu() {
                 echo ""
                 local pkg_to_remove
                 pkg_to_remove=$(printf '%s\n' "${EXTRA_PACKAGES[@]}" | fzf \
-                    --height=40% \
+                    --ansi \
                     --layout=reverse \
                     --border=rounded \
                     --prompt="Select package to remove ❯ " \
