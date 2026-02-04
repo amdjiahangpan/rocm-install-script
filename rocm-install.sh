@@ -35,7 +35,7 @@ NC='\033[0m'
 
 # Default options
 SKIP_SSH=false
-SKIP_REBOOT=false
+REBOOT_DELAY=0  # 0=immediate, >0=delay in minutes, -1=skip
 VERIFY_ONLY=false
 UNINSTALL=false
 NO_DKMS=false
@@ -565,6 +565,16 @@ show_version_menu() {
 # Installation Options Menu
 #######################################
 
+get_reboot_display() {
+    if [[ "$REBOOT_DELAY" -eq -1 ]]; then
+        echo "${YELLOW}Skip${NC}"
+    elif [[ "$REBOOT_DELAY" -eq 0 ]]; then
+        echo "${GREEN}Immediate${NC}"
+    else
+        echo "${CYAN}After ${REBOOT_DELAY} min${NC}"
+    fi
+}
+
 show_options_menu() {
     print_header
 
@@ -576,7 +586,7 @@ show_options_menu() {
     echo ""
     echo -e "  ${CYAN}[1]${NC} DKMS Driver:        $(if [[ "$NO_DKMS" == "true" ]]; then echo "${YELLOW}Disabled${NC}"; else echo "${GREEN}Enabled${NC}"; fi)"
     echo -e "  ${CYAN}[2]${NC} SSH Configuration:  $(if [[ "$SKIP_SSH" == "true" ]]; then echo "${YELLOW}Skip${NC}"; else echo "${GREEN}Configure${NC}"; fi)"
-    echo -e "  ${CYAN}[3]${NC} Auto Reboot:        $(if [[ "$SKIP_REBOOT" == "true" ]]; then echo "${YELLOW}No${NC}"; else echo "${GREEN}Yes${NC}"; fi)"
+    echo -e "  ${CYAN}[3]${NC} Auto Reboot:        $(get_reboot_display)"
     echo -e "  ${CYAN}[4]${NC} Extra Packages:     ${GREEN}${#EXTRA_PACKAGES[@]} packages${NC}"
     echo ""
     echo -e "  ─────────────────────────────────────────"
@@ -585,7 +595,7 @@ show_options_menu() {
     echo -e "  ${CYAN}[q]${NC} Quit"
     echo ""
 
-    read -p "  Enter selection: " option
+    read -r -p "  Enter selection: " option
 
     case "$option" in
         1)
@@ -597,8 +607,7 @@ show_options_menu() {
             show_options_menu
             ;;
         3)
-            SKIP_REBOOT=$(if [[ "$SKIP_REBOOT" == "true" ]]; then echo "false"; else echo "true"; fi)
-            show_options_menu
+            show_reboot_menu
             ;;
         4)
             show_packages_menu
@@ -616,6 +625,63 @@ show_options_menu() {
             ;;
         *)
             show_options_menu
+            ;;
+    esac
+}
+
+show_reboot_menu() {
+    print_header
+
+    echo -e "${BOLD}  Reboot Strategy${NC}"
+    echo ""
+    echo -e "  ─────────────────────────────────────────"
+    echo ""
+    echo -e "  ${GREEN}[0]${NC} ${BOLD}Reboot immediately${NC} ${GREEN}← Default${NC}"
+    echo -e "  ${CYAN}[5]${NC} Reboot after 5 minutes"
+    echo -e "  ${CYAN}[10]${NC} Reboot after 10 minutes"
+    echo -e "  ${CYAN}[30]${NC} Reboot after 30 minutes"
+    echo -e "  ${CYAN}[60]${NC} Reboot after 60 minutes"
+    echo -e "  ${YELLOW}[n]${NC} Skip reboot (manual reboot later)"
+    echo -e "  ${CYAN}[c]${NC} Custom delay (1-120 minutes)"
+    echo ""
+    echo -e "  ─────────────────────────────────────────"
+    echo -e "  ${CYAN}[b]${NC} Back"
+    echo ""
+
+    read -r -p "  Enter selection: " reboot_option
+
+    case "$reboot_option" in
+        0|"")
+            REBOOT_DELAY=0
+            log "Reboot strategy: Immediate"
+            show_options_menu
+            ;;
+        5|10|30|60)
+            REBOOT_DELAY=$reboot_option
+            log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
+            show_options_menu
+            ;;
+        n|N)
+            REBOOT_DELAY=-1
+            log "Reboot strategy: Skip"
+            show_options_menu
+            ;;
+        c|C)
+            read -r -p "  Enter delay in minutes (1-120): " custom_delay
+            if [[ "$custom_delay" =~ ^[0-9]+$ ]] && [[ $custom_delay -ge 1 ]] && [[ $custom_delay -le 120 ]]; then
+                REBOOT_DELAY=$custom_delay
+                log "Reboot strategy: Delayed $REBOOT_DELAY minutes"
+            else
+                warn "Invalid delay. Using immediate reboot."
+                REBOOT_DELAY=0
+            fi
+            show_options_menu
+            ;;
+        b|B)
+            show_options_menu
+            ;;
+        *)
+            show_reboot_menu
             ;;
     esac
 }
@@ -1066,7 +1132,8 @@ Options:
   --latest               Install latest available version
   --root-password PASS   Set root password during installation
   --skip-ssh             Skip SSH configuration
-  --skip-reboot          Don't reboot after installation
+  --skip-reboot          Skip reboot after installation
+  --reboot-delay MIN     Delay reboot for MIN minutes (0=immediate, default: 0)
   --verify-only          Only verify existing installation
   --uninstall            Remove ROCm
   --no-dkms              Skip DKMS driver (use pre-built)
@@ -1074,15 +1141,16 @@ Options:
   --help                 Show this help
 
 Examples:
-  sudo $0                              # Interactive mode
-  sudo $0 --latest                     # Install latest version
-  sudo $0 --version 7.2                # Install ROCm 7.2
-  sudo $0 --latest --root-password 123 # Set root password
-  sudo $0 --verify-only                # Check installation
-  sudo $0 --uninstall                  # Remove ROCm
+  sudo $0                                      # Interactive mode
+  sudo $0 --latest                             # Install latest, reboot immediately
+  sudo $0 --version 7.2 --reboot-delay 10      # Install ROCm 7.2, reboot in 10 min
+  sudo $0 --latest --skip-reboot               # Install without reboot
+  sudo $0 --latest --root-password 123         # Set root password
+  sudo $0 --verify-only                        # Check installation
+  sudo $0 --uninstall                          # Remove ROCm
 
   # Automated installation for scripts
-  sudo $0 --latest --non-interactive --skip-reboot
+  sudo $0 --latest --non-interactive --reboot-delay 5
 
 Supported:
   Ubuntu 22.04, 24.04 | Debian 12 | RHEL/Rocky 9.x
@@ -1101,7 +1169,8 @@ parse_args() {
             --latest) USE_LATEST=true; shift ;;
             --root-password) ROOT_PASSWORD="$2"; shift 2 ;;
             --skip-ssh) SKIP_SSH=true; shift ;;
-            --skip-reboot) SKIP_REBOOT=true; shift ;;
+            --skip-reboot) REBOOT_DELAY=-1; shift ;;
+            --reboot-delay) REBOOT_DELAY="$2"; shift 2 ;;
             --verify-only) VERIFY_ONLY=true; shift ;;
             --uninstall) UNINSTALL=true; shift ;;
             --no-dkms) NO_DKMS=true; shift ;;
@@ -1186,10 +1255,33 @@ main() {
     echo ""
     log "Installation complete. Log: $LOG_FILE"
 
-    if [[ "$SKIP_REBOOT" != "true" ]] && [[ "$NON_INTERACTIVE" != "true" ]]; then
-        read -p "  Reboot now? (Y/n): " -n 1 -r
-        echo
-        [[ ! $REPLY =~ ^[Nn]$ ]] && reboot
+    # Execute reboot strategy (non-interactive mode skips reboot)
+    if [[ "$NON_INTERACTIVE" != "true" ]]; then
+        echo ""
+        if [[ "$REBOOT_DELAY" -eq -1 ]]; then
+            # Skip reboot
+            echo -e "  ${YELLOW}⚠ Reboot skipped.${NC} Remember to reboot manually later."
+            echo -e "  Run: ${CYAN}sudo reboot${NC}"
+        elif [[ "$REBOOT_DELAY" -eq 0 ]]; then
+            # Immediate reboot
+            echo -e "  ${GREEN}Rebooting now...${NC}"
+            sleep 2
+            reboot
+        else
+            # Delayed reboot
+            echo -e "  ${CYAN}System will reboot in $REBOOT_DELAY minute(s).${NC}"
+            echo -e "  ${YELLOW}You can cancel with: ${CYAN}sudo shutdown -c${NC}"
+
+            # Schedule reboot
+            if shutdown -r +"$REBOOT_DELAY" "ROCm installation complete. System rebooting for driver activation." 2>/dev/null; then
+                log "Scheduled reboot in $REBOOT_DELAY minutes using shutdown command"
+            else
+                # Fallback: use background sleep + reboot
+                (sleep $((REBOOT_DELAY * 60)) && reboot) &
+                log "Scheduled reboot in $REBOOT_DELAY minutes using background task (PID: $!)"
+                echo -e "  ${YELLOW}Note: Using background reboot task${NC}"
+            fi
+        fi
     fi
 }
 
