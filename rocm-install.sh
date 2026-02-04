@@ -279,14 +279,18 @@ fetch_versions_from_amd_repo() {
     fi
 
     # Parse version directories using compatible grep/sed (avoid grep -P for portability)
-    # Only include ROCm 6.x and 7.x versions
+    # Include ROCm 6.x and above (supports pre-release versions like 7.9.0)
     local versions=()
     local raw_versions
     raw_versions=$(echo "$versions_html" | grep -oE 'href="[0-9]+\.[0-9]+(\.[0-9]+)?/"' | sed 's/href="//g;s/\/"//g' | sort -Vr | uniq)
 
     while IFS= read -r version; do
-        if [[ "$version" =~ ^[67]\.[0-9]+(\.[0-9]+)?$ ]]; then
-            versions+=("$version")
+        # Support 6.x, 7.x, 8.x, etc. (major version >= 6)
+        if [[ "$version" =~ ^([0-9]+)\.[0-9]+(\.[0-9]+)?$ ]]; then
+            local major="${BASH_REMATCH[1]}"
+            if [[ "$major" -ge 6 ]]; then
+                versions+=("$version")
+            fi
         fi
     done <<< "$raw_versions"
 
@@ -312,9 +316,12 @@ fetch_versions_from_github() {
     raw_versions=$(echo "$releases_html" | grep -oE 'rocm-[0-9]+\.[0-9]+\.[0-9]+' | sed 's/rocm-//g' | sort -Vr | uniq)
 
     while IFS= read -r version; do
-        # Only include 6.x and 7.x versions
-        if [[ "$version" =~ ^[67]\.[0-9]+\.[0-9]+$ ]]; then
-            versions+=("$version")
+        # Support 6.x, 7.x, 8.x, etc. (major version >= 6)
+        if [[ "$version" =~ ^([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            local major="${BASH_REMATCH[1]}"
+            if [[ "$major" -ge 6 ]]; then
+                versions+=("$version")
+            fi
         fi
     done <<< "$raw_versions"
 
