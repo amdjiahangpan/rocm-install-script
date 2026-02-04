@@ -310,10 +310,10 @@ fetch_versions_from_github() {
         return 1
     fi
 
-    # Parse rocm-X.Y.Z tags using compatible grep/sed
+    # Parse rocm-X.Y.Z and therock-X.Y.Z tags using compatible grep/sed
     local versions=()
     local raw_versions
-    raw_versions=$(echo "$releases_html" | grep -oE 'rocm-[0-9]+\.[0-9]+\.[0-9]+' | sed 's/rocm-//g' | sort -Vr | uniq)
+    raw_versions=$(echo "$releases_html" | grep -oE '(rocm|therock)-[0-9]+\.[0-9]+\.[0-9]+' | sed 's/rocm-//g;s/therock-//g' | sort -Vr | uniq)
 
     while IFS= read -r version; do
         # Support 6.x, 7.x, 8.x, etc. (major version >= 6)
