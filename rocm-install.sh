@@ -501,6 +501,9 @@ fetch_available_versions() {
     echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (source: $source_used)"
 }
 
+# Cache for AMD repo availability checks
+declare -A AMD_REPO_CACHE
+
 is_prerelease() {
     local version="$1"
 
@@ -511,8 +514,14 @@ is_prerelease() {
         fi
     done
 
+    # Check cache first
+    if [[ -n "${AMD_REPO_CACHE[$version]+x}" ]]; then
+        [[ "${AMD_REPO_CACHE[$version]}" == "prerelease" ]] && return 0
+        return 1
+    fi
+
     # Fallback: check if this version exists in AMD repo (amdgpu-install)
-    # If not found, it's likely a pre-release version
+    # Only do this check once per version (cached)
     if [[ ${#PRERELEASE_VERSIONS[@]} -eq 0 ]] && [[ -n "$version" ]]; then
         echo -e "  Checking version availability in AMD repository..."
 
@@ -537,16 +546,99 @@ is_prerelease() {
                 http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${REPO_BASE_URL}/${major_minor}/" 2>/dev/null || echo "000")
                 if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
                     echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release detected)"
+                    AMD_REPO_CACHE[$version]="prerelease"
                     return 0  # Pre-release
                 fi
             else
                 echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release detected)"
+                AMD_REPO_CACHE[$version]="prerelease"
                 return 0  # Pre-release
             fi
         fi
+        AMD_REPO_CACHE[$version]="stable"
     fi
 
     return 1
+}
+
+# Batch check versions against AMD repo (parallel)
+batch_check_versions_availability() {
+    if [[ ${#PRERELEASE_VERSIONS[@]} -gt 0 ]]; then
+        # Already have pre-release info from GitHub
+        return 0
+    fi
+
+    if [[ ${#AVAILABLE_VERSIONS[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    echo -e "\n${BOLD}Checking version availability...${NC}"
+
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    local pids=()
+
+    # Start parallel checks for all versions
+    for version in "${AVAILABLE_VERSIONS[@]}"; do
+        (
+            local check_url="${REPO_BASE_URL}/${version}/"
+            local http_code
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "$check_url" 2>/dev/null || echo "000")
+
+            if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
+                # Check major.minor format
+                if [[ "$version" =~ ^([0-9]+)\.([0-9]+) ]]; then
+                    local major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+                    http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "${REPO_BASE_URL}/${major_minor}/" 2>/dev/null || echo "000")
+                fi
+            fi
+
+            if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
+                echo "prerelease" > "${temp_dir}/${version}"
+            else
+                echo "stable" > "${temp_dir}/${version}"
+            fi
+        ) &
+        pids+=($!)
+    done
+
+    # Show loading while waiting
+    printf "  Checking %d versions in parallel... " "${#AVAILABLE_VERSIONS[@]}"
+    local running=true
+    while $running; do
+        running=false
+        for pid in "${pids[@]}"; do
+            if ps -p "$pid" > /dev/null 2>&1; then
+                running=true
+                break
+            fi
+        done
+        if $running; then
+            printf "%s⣾%s\b" "${CYAN}" "${NC}"
+            sleep 0.15
+        fi
+    done
+    printf " %s✓%s\n" "${GREEN}" "${NC}"
+
+    # Collect results
+    local prerelease_count=0
+    for version in "${AVAILABLE_VERSIONS[@]}"; do
+        if [[ -f "${temp_dir}/${version}" ]]; then
+            local status
+            status=$(cat "${temp_dir}/${version}")
+            AMD_REPO_CACHE[$version]="$status"
+            if [[ "$status" == "prerelease" ]]; then
+                PRERELEASE_VERSIONS+=("$version")
+                ((prerelease_count++))
+            fi
+        fi
+    done
+
+    rm -rf "$temp_dir"
+
+    if [[ $prerelease_count -gt 0 ]]; then
+        echo -e "  ${YELLOW}!${NC} Found ${prerelease_count} pre-release version(s)"
+    fi
 }
 
 get_latest_version() {
@@ -2470,6 +2562,11 @@ main() {
     fi
 
     rm -f "$gpu_temp_file" "$versions_temp_file"
+
+    # Batch check versions availability in parallel (only if GitHub didn't provide pre-release info)
+    if [[ ${#PRERELEASE_VERSIONS[@]} -eq 0 ]] && [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
+        batch_check_versions_availability
+    fi
 
     # Interactive mode: show main menu
     if [[ "$USE_LATEST" == "true" ]]; then
