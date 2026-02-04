@@ -552,7 +552,7 @@ show_version_menu() {
             --border=rounded \
             --prompt="ROCm Version ❯ " \
             --header="Use ↑↓ arrows to navigate, Enter to select, Esc to quit" \
-            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+            --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
         if [[ -z "$selection" ]]; then
             echo "Installation cancelled."
@@ -651,7 +651,7 @@ show_main_menu() {
             --border=rounded \
             --prompt="ROCm Installer ❯ " \
             --header="Press Enter for Quick Install, or ↑↓ to choose" \
-            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+            --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
         if [[ -z "$selection" ]]; then
             echo "Installation cancelled."
@@ -781,7 +781,7 @@ show_options_menu() {
             --border=rounded \
             --prompt="Installation Options [ROCm $ROCM_VERSION] ❯ " \
             --header="Use ↑↓ to navigate, Enter to select" \
-            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+            --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
         if [[ -z "$selection" ]]; then
             echo "Installation cancelled."
@@ -903,7 +903,7 @@ show_reboot_menu() {
             --border=rounded \
             --prompt="Reboot Strategy ❯ " \
             --header="Use ↑↓ to navigate, Enter to select" \
-            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+            --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
         if [[ -z "$selection" ]]; then
             show_options_menu
@@ -1037,7 +1037,7 @@ show_packages_menu() {
             --border=rounded \
             --prompt="Extra Packages (${#EXTRA_PACKAGES[@]}) ❯ " \
             --header="Use ↑↓ to navigate, Enter to select" \
-            --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+            --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
         if [[ -z "$selection" ]]; then
             show_options_menu
@@ -1074,7 +1074,7 @@ show_packages_menu() {
                     --border=rounded \
                     --prompt="Select package to remove ❯ " \
                     --header="Use ↑↓ to navigate, type to search" \
-                    --color="fg:#ffffff,bg:#1e1e1e,hl:#00d7ff,fg+:#ffffff,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
+                    --color="fg:-1,bg:#1e1e1e,hl:#00d7ff,fg+:-1,bg+:#005f87,hl+:#00d7ff,info:#afaf87,prompt:#00d7ff,pointer:#00d7ff,marker:#00d7ff,spinner:#00d7ff,header:#87afaf")
 
                 if [[ -n "$pkg_to_remove" ]]; then
                     for i in "${!EXTRA_PACKAGES[@]}"; do
