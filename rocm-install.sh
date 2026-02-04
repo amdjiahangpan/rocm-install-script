@@ -173,17 +173,19 @@ show_loading() {
     local delay=0.15
     local spinstr='⣾⣽⣻⢿⡿⣟⣯⣷'
 
+    # Print message with spinner, using backspace to update spinner character
     printf "  %s " "$message"
     while ps -p "$pid" > /dev/null 2>&1; do
         for (( i=0; i<${#spinstr}; i++ )); do
             if ! ps -p "$pid" > /dev/null 2>&1; then
                 break
             fi
-            printf "\r  %s ${CYAN}%s${NC} " "$message" "${spinstr:$i:1}"
+            printf "%s%s%s\b" "${CYAN}" "${spinstr:$i:1}" "${NC}"
             sleep $delay
         done
     done
-    printf "\r  %s ${GREEN}✓${NC}\n" "$message"
+    # Clear spinner and show checkmark
+    printf " %s✓%s\n" "${GREEN}" "${NC}"
 }
 
 #######################################
