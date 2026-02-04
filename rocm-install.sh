@@ -2632,7 +2632,7 @@ main() {
     # This catches cases where --version is specified directly (bypassing show_version_menu)
     # If version not in cache, do a single check now
     if [[ -z "${AMD_REPO_CACHE[$ROCM_VERSION]+x}" ]] && ! is_prerelease "$ROCM_VERSION"; then
-        check_version_availability "$ROCM_VERSION"
+        check_version_availability "$ROCM_VERSION" || true
     fi
 
     if should_use_therock "$ROCM_VERSION" && [[ "$THEROCK_MODE" != "true" ]]; then
