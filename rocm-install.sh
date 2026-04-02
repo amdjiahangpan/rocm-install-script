@@ -442,13 +442,15 @@ fetch_versions_from_amd_repo() {
 # Pre-release versions (therock-X.Y.Z)
 PRERELEASE_VERSIONS=()
 
-# Fetch versions from GitHub releases
+# Fetch versions from GitHub releases/tags
 # Output format: VERSION or PRERELEASE:VERSION for pre-release versions
 fetch_versions_from_github() {
     local releases_html
+    local therock_tags_html
     releases_html=$(http_get "https://github.com/ROCm/ROCm/releases")
+    therock_tags_html=$(http_get "https://github.com/ROCm/TheRock/tags")
 
-    if [[ -z "$releases_html" ]]; then
+    if [[ -z "$releases_html" ]] && [[ -z "$therock_tags_html" ]]; then
         return 1
     fi
 
@@ -469,13 +471,18 @@ fetch_versions_from_github() {
         fi
     done <<< "$stable_versions"
 
-    # Parse pre-release versions (therock-X.Y.Z)
+    # Parse TheRock versions from both ROCm releases and ROCm/TheRock tags.
     local prerelease_versions
-    prerelease_versions=$(echo "$releases_html" | grep -oE 'therock-[0-9]+\.[0-9]+\.[0-9]+' | sed 's/therock-//g' | sort -Vr | uniq)
+    prerelease_versions=$(
+        {
+            echo "$releases_html" | grep -oE 'therock-[0-9]+\.[0-9]+(\.[0-9]+)?+' | sed 's/therock-//g'
+            echo "$therock_tags_html" | grep -oE 'therock-[0-9]+\.[0-9]+(\.[0-9]+)?+' | sed 's/therock-//g'
+        } | sort -Vr | uniq
+    )
 
     while IFS= read -r version; do
         if [[ -z "$version" ]]; then continue; fi
-        if [[ "$version" =~ ^([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+        if [[ "$version" =~ ^([0-9]+)\.[0-9]+(\.[0-9]+)?$ ]]; then
             local major="${BASH_REMATCH[1]}"
             if [[ "$major" -ge 6 ]]; then
                 # Add to pre-release tracking if not already a stable version
