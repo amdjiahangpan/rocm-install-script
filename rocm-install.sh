@@ -530,10 +530,10 @@ fetch_available_versions() {
     local temp_file
     temp_file=$(mktemp)
 
-    # Primary source: GitHub releases (with loading animation)
+    # Primary source: GitHub releases and TheRock tags (with loading animation)
     fetch_versions_from_github > "$temp_file" 2>/dev/null &
     local fetch_pid=$!
-    show_loading "Checking GitHub releases..." $fetch_pid
+    show_loading "Checking GitHub releases and TheRock tags..." $fetch_pid
     wait $fetch_pid 2>/dev/null || true
 
     if [[ -s "$temp_file" ]]; then
