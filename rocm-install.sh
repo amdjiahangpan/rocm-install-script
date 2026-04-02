@@ -218,6 +218,40 @@ http_status() {
     fi
 }
 
+resolve_therock_tarball_name() {
+    local gpu_arch="$1"
+    local rocm_version="$2"
+    local tarball_index
+    tarball_index=$(http_get "${THEROCK_TARBALL_BASE}/")
+
+    if [[ -z "$tarball_index" ]]; then
+        return 1
+    fi
+
+    local arch_files
+    arch_files=$(echo "$tarball_index" | grep -oE "therock-dist-linux-${gpu_arch}-[^\" ,]+\.tar\.gz" | sort -Vu)
+
+    if [[ -z "$arch_files" ]]; then
+        return 1
+    fi
+
+    local exact_name="therock-dist-linux-${gpu_arch}-${rocm_version}.tar.gz"
+    if echo "$arch_files" | grep -Fxq "$exact_name"; then
+        echo "$exact_name"
+        return 0
+    fi
+
+    local version_matches
+    version_matches=$(echo "$arch_files" | grep -E "^therock-dist-linux-${gpu_arch}-${rocm_version}([.-][^/]*)?\.tar\.gz$|^therock-dist-linux-${gpu_arch}-${rocm_version}[[:alnum:]._-]*\.tar\.gz$" | sort -V)
+
+    if [[ -n "$version_matches" ]]; then
+        echo "$version_matches" | tail -n1
+        return 0
+    fi
+
+    return 1
+}
+
 #######################################
 # System Detection
 #######################################
@@ -2111,7 +2145,14 @@ step_therock_install_tarball() {
     draw_box "Step 5: Installing TheRock via tarball"
     echo ""
 
-    local tarball_name="therock-dist-linux-${GPU_ARCH}-${ROCM_VERSION}.tar.gz"
+    local tarball_name
+    tarball_name=$(resolve_therock_tarball_name "$GPU_ARCH" "$ROCM_VERSION") || true
+    if [[ -z "$tarball_name" ]]; then
+        tarball_name="therock-dist-linux-${GPU_ARCH}-${ROCM_VERSION}.tar.gz"
+        warn "Could not resolve exact TheRock tarball from index, falling back to ${tarball_name}"
+    else
+        log "Resolved TheRock tarball: ${tarball_name}"
+    fi
     local tarball_url="${THEROCK_TARBALL_BASE}/${tarball_name}"
     local install_path="/opt/rocm-${ROCM_VERSION}"
 
