@@ -188,6 +188,36 @@ show_loading() {
     printf " %s✓%s\n" "${GREEN}" "${NC}"
 }
 
+http_get() {
+    local url="$1"
+
+    if command -v curl &> /dev/null; then
+        curl -sL --connect-timeout 10 "$url" 2>/dev/null || echo ""
+    elif command -v wget &> /dev/null; then
+        wget -qO- --timeout=10 "$url" 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
+
+http_status() {
+    local url="$1"
+
+    if command -v curl &> /dev/null; then
+        curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$url" 2>/dev/null || echo "000"
+    elif command -v wget &> /dev/null; then
+        wget -q --spider --timeout=5 "$url" 2>/dev/null
+        local status=$?
+        if [[ $status -eq 0 ]]; then
+            echo "200"
+        else
+            echo "000"
+        fi
+    else
+        echo "000"
+    fi
+}
+
 #######################################
 # System Detection
 #######################################
@@ -380,7 +410,7 @@ USE_FZF=false
 # Fetch versions from AMD repository
 fetch_versions_from_amd_repo() {
     local versions_html
-    versions_html=$(curl -s --connect-timeout 10 "$REPO_BASE_URL/" 2>/dev/null || echo "")
+    versions_html=$(http_get "$REPO_BASE_URL/")
 
     if [[ -z "$versions_html" ]]; then
         return 1
@@ -416,7 +446,7 @@ PRERELEASE_VERSIONS=()
 # Output format: VERSION or PRERELEASE:VERSION for pre-release versions
 fetch_versions_from_github() {
     local releases_html
-    releases_html=$(curl -sL --connect-timeout 10 "https://github.com/ROCm/ROCm/releases" 2>/dev/null || echo "")
+    releases_html=$(http_get "https://github.com/ROCm/ROCm/releases")
 
     if [[ -z "$releases_html" ]]; then
         return 1
@@ -559,7 +589,7 @@ check_version_availability() {
     local temp_file
     temp_file=$(mktemp)
 
-    curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$check_url" > "$temp_file" 2>/dev/null &
+    http_status "$check_url" > "$temp_file" &
     local curl_pid=$!
     show_loading "Verifying ROCm ${version}..." $curl_pid
     wait $curl_pid 2>/dev/null || true
@@ -569,7 +599,7 @@ check_version_availability() {
     if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
         if [[ "$version" =~ ^([0-9]+)\.([0-9]+) ]]; then
             local major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-            http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "${REPO_BASE_URL}/${major_minor}/" 2>/dev/null || echo "000")
+            http_code=$(http_status "${REPO_BASE_URL}/${major_minor}/")
             if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
                 echo -e "  ${YELLOW}!${NC} Version ${version} not found in AMD repo (pre-release)"
                 AMD_REPO_CACHE[$version]="prerelease"
@@ -609,13 +639,13 @@ batch_check_versions_availability() {
         (
             local check_url="${REPO_BASE_URL}/${version}/"
             local http_code
-            http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "$check_url" 2>/dev/null || echo "000")
+            http_code=$(http_status "$check_url")
 
             if [[ "$http_code" == "404" ]] || [[ "$http_code" == "000" ]]; then
                 # Check major.minor format
                 if [[ "$version" =~ ^([0-9]+)\.([0-9]+) ]]; then
                     local major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-                    http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "${REPO_BASE_URL}/${major_minor}/" 2>/dev/null || echo "000")
+                    http_code=$(http_status "${REPO_BASE_URL}/${major_minor}/")
                 fi
             fi
 
@@ -695,7 +725,7 @@ fetch_package_name_from_repo() {
     local pkg_pattern="$2"
 
     local pkg_list
-    pkg_list=$(curl -s --connect-timeout 10 "$repo_url" 2>/dev/null || echo "")
+    pkg_list=$(http_get "$repo_url")
 
     if [[ -n "$pkg_list" ]]; then
         echo "$pkg_list" | grep -oP "${pkg_pattern}" | head -1
@@ -1689,6 +1719,18 @@ step_prerequisites() {
     draw_box "Step 1: Installing Prerequisites"
     echo ""
 
+    # Bootstrap network fetch tools first so later steps can rely on them.
+    case "$PKG_MGR" in
+        apt)
+            apt-get update
+            apt-get install -y curl wget ca-certificates
+            ;;
+        dnf)
+            dnf makecache
+            dnf install -y curl wget ca-certificates
+            ;;
+    esac
+
     $PKG_UPDATE
 
     case "$PKG_MGR" in
@@ -1866,7 +1908,7 @@ step_install_amdgpu() {
                 [[ "$OS_VERSION" == "22.04" ]] && codename="jammy" || codename="noble"
                 AMDGPU_URL="${REPO_BASE_URL}/latest/ubuntu/${codename}/"
                 local pkg_name
-                pkg_name=$(curl -s "$AMDGPU_URL" | grep -oP 'amdgpu-install_[^"]+\.deb' | head -1)
+                pkg_name=$(http_get "$AMDGPU_URL" | grep -oP 'amdgpu-install_[^"]+\.deb' | head -1)
                 wget -q --show-progress "${AMDGPU_URL}${pkg_name}" -O amdgpu-install.pkg
                 ;;
         esac
