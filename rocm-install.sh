@@ -396,6 +396,133 @@ should_use_therock() {
     return 1
 }
 
+version_ge() {
+    local version="$1"
+    local minimum="$2"
+
+    [[ "$(printf '%s\n%s\n' "$minimum" "$version" | sort -V | head -n1)" == "$minimum" ]]
+}
+
+normalize_repo_version() {
+    local version="$1"
+
+    if [[ "$version" =~ ^([0-9]+\.[0-9]+)\.0$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "$version"
+    fi
+}
+
+get_apt_repo_codename() {
+    case "$OS_ID:$OS_VERSION" in
+        ubuntu:22.04|debian:12)
+            echo "jammy"
+            ;;
+        ubuntu:24.04|debian:13)
+            echo "noble"
+            ;;
+        ubuntu:*)
+            error "Unsupported Ubuntu version: $OS_VERSION"
+            ;;
+        debian:*)
+            error "Unsupported Debian version: $OS_VERSION"
+            ;;
+        *)
+            error "Apt codename is only available for Ubuntu/Debian systems"
+            ;;
+    esac
+}
+
+get_graphics_repo_version() {
+    local repo_version
+    repo_version=$(normalize_repo_version "$1")
+
+    case "$repo_version" in
+        7.2.2)
+            echo "7.2.1"
+            ;;
+        *)
+            echo "$repo_version"
+            ;;
+    esac
+}
+
+get_amdgpu_repo_release() {
+    local repo_version
+    repo_version=$(normalize_repo_version "$1")
+
+    case "$repo_version" in
+        7.2.2)
+            echo "30.30.1"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+repair_apt_sources() {
+    local version="$1"
+    local codename repo_version graphics_version amdgpu_release
+
+    repo_version=$(normalize_repo_version "$version")
+    codename=$(get_apt_repo_codename)
+    graphics_version=$(get_graphics_repo_version "$version")
+
+    cat > /etc/apt/sources.list.d/rocm.list << EOF
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${repo_version} ${codename} main
+deb [arch=amd64,i386 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/graphics/${graphics_version}/ubuntu ${codename} main
+EOF
+    log "Repaired ROCm apt sources for ${repo_version} (${codename}, graphics ${graphics_version})"
+
+    if amdgpu_release=$(get_amdgpu_repo_release "$version"); then
+        cat > /etc/apt/sources.list.d/amdgpu.list << EOF
+deb [arch=amd64,i386 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/${amdgpu_release}/ubuntu ${codename} main
+#deb-src [signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/${amdgpu_release}/ubuntu ${codename} main
+EOF
+        log "Repaired AMDGPU apt source to driver release ${amdgpu_release}"
+    fi
+}
+
+apt_has_package() {
+    local package_name="$1"
+    apt-cache show "$package_name" >/dev/null 2>&1
+}
+
+should_lock_kernel() {
+    local version="$1"
+
+    if version_ge "$version" "7.0"; then
+        return 1
+    fi
+
+    return 0
+}
+
+unlock_kernel() {
+    case "$PKG_MGR" in
+        apt)
+            local kernel_ver
+            kernel_ver=$(uname -r)
+            apt-mark unhold "linux-image-${kernel_ver}" 2>/dev/null || true
+            apt-mark unhold "linux-image-${kernel_ver}-generic" 2>/dev/null || true
+            apt-mark unhold "linux-headers-${kernel_ver}" 2>/dev/null || true
+            apt-mark unhold linux-image-generic linux-headers-generic 2>/dev/null || true
+
+            local conf_file="/etc/apt/apt.conf.d/50unattended-upgrades"
+            if [[ -f "$conf_file" ]]; then
+                sed -i 's|^// "Ubuntu:Linux";|        "Ubuntu:Linux";|g' "$conf_file" 2>/dev/null || true
+                sed -i '/"linux-image\*";/d;/"linux-headers\*";/d;/"linux-modules\*";/d' "$conf_file" 2>/dev/null || true
+            fi
+            ;;
+        dnf)
+            if [[ -f /etc/dnf/dnf.conf ]]; then
+                sed -i '/^exclude=kernel\*$/d' /etc/dnf/dnf.conf 2>/dev/null || true
+            fi
+            ;;
+    esac
+}
+
 # Check if GPU is an APU (uses kernel driver, no amdgpu-install needed)
 is_apu_gpu() {
     local arch="$1"
@@ -814,11 +941,7 @@ get_package_url() {
 
     case "$OS_ID" in
         ubuntu)
-            case "$OS_VERSION" in
-                "22.04") codename="jammy" ;;
-                "24.04") codename="noble" ;;
-                *) error "Unsupported Ubuntu version: $OS_VERSION" ;;
-            esac
+            codename=$(get_apt_repo_codename)
 
             # Try exact version directory first
             repo_dir_url="${REPO_BASE_URL}/${dir_version}/ubuntu/${codename}/"
@@ -852,7 +975,7 @@ get_package_url() {
             ;;
 
         debian)
-            codename="bookworm"
+            codename=$(get_apt_repo_codename)
             repo_dir_url="${REPO_BASE_URL}/${dir_version}/ubuntu/${codename}/"
             pkg_name=$(fetch_package_name_from_repo "$repo_dir_url" 'amdgpu-install_[^"]+\.deb')
 
@@ -1892,6 +2015,13 @@ step_lock_kernel() {
     draw_box "Step 3: Kernel Management"
     echo ""
 
+    if ! should_lock_kernel "$ROCM_VERSION"; then
+        log "ROCm ${ROCM_VERSION} does not require kernel locking; restoring previous kernel update settings"
+        unlock_kernel
+        echo -e "\n  ${GREEN}✓${NC} Kernel locking skipped for ROCm ${ROCM_VERSION}"
+        return 0
+    fi
+
     log "Locking kernel version: $(uname -r)"
 
     case "$PKG_MGR" in
@@ -1943,10 +2073,10 @@ step_install_amdgpu() {
     if ! wget -q --show-progress "$AMDGPU_URL" -O amdgpu-install.pkg 2>&1; then
         # Try with latest symlink as fallback
         warn "Direct download failed, trying latest..."
-        case "$OS_ID" in
-            ubuntu)
+        case "$PKG_MGR" in
+            apt)
                 local codename
-                [[ "$OS_VERSION" == "22.04" ]] && codename="jammy" || codename="noble"
+                codename=$(get_apt_repo_codename)
                 AMDGPU_URL="${REPO_BASE_URL}/latest/ubuntu/${codename}/"
                 local pkg_name
                 pkg_name=$(http_get "$AMDGPU_URL" | grep -oP 'amdgpu-install_[^"]+\.deb' | head -1)
@@ -1958,6 +2088,7 @@ step_install_amdgpu() {
     case "$PKG_MGR" in
         apt)
             dpkg -i amdgpu-install.pkg 2>/dev/null || apt-get install -f -y
+            repair_apt_sources "$ROCM_VERSION"
             apt-get update
             ;;
         dnf)
@@ -1976,6 +2107,11 @@ step_install_rocm() {
 
     case "$PKG_MGR" in
         apt)
+            if ! apt_has_package rocm; then
+                repair_apt_sources "$ROCM_VERSION"
+                apt-get update
+            fi
+
             if [[ "$NO_DKMS" != "true" ]]; then
                 echo -e "  Installing AMDGPU DKMS driver..."
                 if ! apt-get install -y amdgpu-dkms 2>&1; then
@@ -1985,6 +2121,9 @@ step_install_rocm() {
             fi
 
             echo -e "  Installing ROCm packages..."
+            if ! apt_has_package rocm; then
+                error "Unable to locate package 'rocm' after refreshing AMD repositories for ROCm ${ROCM_VERSION}"
+            fi
             apt-get install -y rocm
             ;;
         dnf)
@@ -2210,6 +2349,7 @@ step_therock_driver() {
         case "$PKG_MGR" in
             apt)
                 dpkg -i amdgpu-install.pkg 2>/dev/null || apt-get install -f -y
+                repair_apt_sources "$stable_version"
                 apt-get update
 
                 # Install only the driver, not ROCm
