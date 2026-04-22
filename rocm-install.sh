@@ -283,7 +283,7 @@ detect_system() {
     case "$OS_ID" in
         ubuntu|debian)
             PKG_MGR="apt"
-            PKG_INSTALL="apt-get install -y"
+            PKG_INSTALL="apt_install"
             PKG_UPDATE="apt-get update"
             ;;
         rhel|centos|rocky|almalinux|ol)
@@ -311,7 +311,7 @@ detect_gpu() {
     echo -e "\n${BOLD}Detecting AMD GPUs...${NC}\n"
 
     if ! command -v lspci &> /dev/null; then
-        apt-get update -qq && apt-get install -y -qq pciutils > /dev/null 2>&1
+        apt-get update -qq && apt_install_quiet pciutils
     fi
 
     GPU_LIST=$(lspci | grep -E "VGA|Display|3D" | grep -i amd || true)
@@ -523,6 +523,34 @@ unlock_kernel() {
     esac
 }
 
+apt_install() {
+    DEBIAN_FRONTEND=noninteractive \
+        apt-get \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        install -y "$@"
+}
+
+apt_install_quiet() {
+    DEBIAN_FRONTEND=noninteractive \
+        apt-get \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        install -y -qq "$@" > /dev/null 2>&1
+}
+
+apt_fix_broken_install() {
+    DEBIAN_FRONTEND=noninteractive \
+        apt-get \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        install -f -y "$@"
+}
+
+dpkg_install_package() {
+    dpkg --force-confdef --force-confold -i "$@"
+}
+
 # Check if GPU is an APU (uses kernel driver, no amdgpu-install needed)
 is_apu_gpu() {
     local arch="$1"
@@ -548,7 +576,7 @@ install_fzf_if_needed() {
 
         case "$PKG_MGR" in
             apt)
-                apt-get update -qq && apt-get install -y -qq fzf > /dev/null 2>&1
+                apt-get update -qq && apt_install_quiet fzf
                 ;;
             dnf)
                 dnf install -y -q fzf > /dev/null 2>&1
@@ -1887,7 +1915,7 @@ step_prerequisites() {
     case "$PKG_MGR" in
         apt)
             apt-get update
-            apt-get install -y curl wget ca-certificates
+            apt_install curl wget ca-certificates
             ;;
         dnf)
             dnf makecache
@@ -2087,7 +2115,7 @@ step_install_amdgpu() {
 
     case "$PKG_MGR" in
         apt)
-            dpkg -i amdgpu-install.pkg 2>/dev/null || apt-get install -f -y
+            dpkg_install_package amdgpu-install.pkg 2>/dev/null || apt_fix_broken_install
             repair_apt_sources "$ROCM_VERSION"
             apt-get update
             ;;
@@ -2114,7 +2142,7 @@ step_install_rocm() {
 
             if [[ "$NO_DKMS" != "true" ]]; then
                 echo -e "  Installing AMDGPU DKMS driver..."
-                if ! apt-get install -y amdgpu-dkms 2>&1; then
+                if ! apt_install amdgpu-dkms 2>&1; then
                     warn "DKMS failed, continuing without it..."
                     NO_DKMS=true
                 fi
@@ -2124,7 +2152,7 @@ step_install_rocm() {
             if ! apt_has_package rocm; then
                 error "Unable to locate package 'rocm' after refreshing AMD repositories for ROCm ${ROCM_VERSION}"
             fi
-            apt-get install -y rocm
+            apt_install rocm
             ;;
         dnf)
             if [[ "$NO_DKMS" == "true" ]]; then
@@ -2215,14 +2243,14 @@ step_therock_prerequisites() {
             if ! command -v python3.11 &> /dev/null; then
                 # Add deadsnakes PPA for Python 3.11 on Ubuntu
                 if [[ "$OS_ID" == "ubuntu" ]]; then
-                    apt-get install -y software-properties-common
+                    apt_install software-properties-common
                     add-apt-repository -y ppa:deadsnakes/ppa
                     apt-get update
                 fi
-                apt-get install -y python3.11 python3.11-venv python3.11-dev || true
+                apt_install python3.11 python3.11-venv python3.11-dev || true
             fi
             # Ensure pip is available
-            apt-get install -y python3-pip || true
+            apt_install python3-pip || true
             ;;
         dnf)
             dnf install -y python3.11 python3.11-pip python3.11-devel || true
@@ -2348,14 +2376,14 @@ step_therock_driver() {
     if wget -q --show-progress "$AMDGPU_URL" -O amdgpu-install.pkg 2>&1; then
         case "$PKG_MGR" in
             apt)
-                dpkg -i amdgpu-install.pkg 2>/dev/null || apt-get install -f -y
+                dpkg_install_package amdgpu-install.pkg 2>/dev/null || apt_fix_broken_install
                 repair_apt_sources "$stable_version"
                 apt-get update
 
                 # Install only the driver, not ROCm
                 if [[ "$NO_DKMS" != "true" ]]; then
                     echo -e "  Installing AMDGPU DKMS driver..."
-                    apt-get install -y amdgpu-dkms || warn "DKMS installation failed"
+                    apt_install amdgpu-dkms || warn "DKMS installation failed"
                 fi
                 ;;
             dnf)
