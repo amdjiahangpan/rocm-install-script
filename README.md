@@ -45,7 +45,7 @@ sudo ./rocm-install.sh
 
 This will show an interactive menu where you can:
 1. Select ROCm version (or use latest)
-2. Configure installation options
+2. Configure installation options, including driver mode and DKMS cleanup policy
 3. Manage extra packages
 
 ### Command Line Options
@@ -61,7 +61,9 @@ Options:
   --reboot-delay MIN     Delay reboot for MIN minutes (0=immediate, default: 0)
   --verify-only          Only verify existing installation
   --uninstall            Remove ROCm
+  --driver-mode MODE     Driver mode: auto (default), inbox, or dkms
   --no-dkms              Skip DKMS driver (use pre-built)
+  --dkms-cleanup POLICY   DKMS cleanup policy: auto (default), ask, always, or never
   --non-interactive      Run without prompts
   --help                 Show help message
 ```
@@ -82,8 +84,17 @@ curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/u
 # One-line: Install with 10-minute delayed reboot
 curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest --reboot-delay 10
 
+# Explicit driver mode selection
+sudo ./rocm-install.sh --latest --driver-mode dkms
+
 # Install without DKMS (for newer kernels)
 sudo ./rocm-install.sh --latest --no-dkms
+
+# Ryzen AI APUs should use inbox driver mode
+sudo ./rocm-install.sh --latest --driver-mode inbox
+
+# Remove existing amdgpu-dkms before switching a Ryzen APU to inbox mode
+sudo ./rocm-install.sh --latest --driver-mode inbox --dkms-cleanup always
 
 # Verify installation
 sudo ./rocm-install.sh --verify-only
@@ -163,6 +174,30 @@ Use `--no-dkms` flag:
 ```bash
 sudo ./rocm-install.sh --latest --no-dkms
 ```
+
+### Ryzen AI APU systems
+Driver mode defaults to `auto`, which uses inbox driver mode when a Ryzen APU is
+detected. The script treats exact Ryzen APU targets such as `gfx1150`,
+`gfx1151`, `gfx1152`, and `gfx1103` conservatively. To force the AMD-recommended
+Ryzen APU path explicitly:
+```bash
+sudo ./rocm-install.sh --latest --driver-mode inbox
+```
+
+If you are migrating from an older DKMS-based install on a Ryzen APU, use the
+cleanup policy to remove `amdgpu-dkms` before installation:
+```bash
+sudo ./rocm-install.sh --latest --driver-mode inbox --dkms-cleanup always
+```
+
+Cleanup policy behavior:
+- `auto`: prompt in interactive mode, skip in non-interactive mode
+- `ask`: prompt in interactive mode, skip in non-interactive mode
+- `always`: remove without prompting
+- `never`: warn only, do not remove
+
+For standard non-APU installs, resolved driver mode stays `dkms`, so cleanup does
+not run unless inbox mode is selected.
 
 ## Legacy Branches
 

@@ -39,10 +39,15 @@ REBOOT_DELAY=0  # 0=immediate, >0=delay in minutes, -1=skip
 VERIFY_ONLY=false
 UNINSTALL=false
 NO_DKMS=false
+DRIVER_MODE="auto"
+DRIVER_MODE_RESOLVED=""
+DKMS_CLEANUP_POLICY="auto"
 USE_LATEST=false
 ROCM_VERSION=""
 NON_INTERACTIVE=false
 ROOT_PASSWORD=""
+DRIVER_MODE_CLI_VALUE=""
+NO_DKMS_CLI_SPECIFIED=false
 
 # TheRock (ROCm 7.9.0+) configuration
 THEROCK_MODE=false
@@ -551,15 +556,285 @@ dpkg_install_package() {
     dpkg --force-confdef --force-confold -i "$@"
 }
 
-# Check if GPU is an APU (uses kernel driver, no amdgpu-install needed)
-is_apu_gpu() {
+# Check if GPU architecture is a known Ryzen APU target.
+is_ryzen_apu_arch() {
     local arch="$1"
+
     case "$arch" in
-        gfx1151)
+        gfx1150|gfx1151|gfx1152|gfx1103)
             return 0
             ;;
         *)
             return 1
+            ;;
+    esac
+}
+
+# Conservative Ryzen APU detection for driver mode auto resolution.
+detect_ryzen_apu_target() {
+    local gpu_lines=""
+
+    if is_ryzen_apu_arch "$GPU_ARCH"; then
+        return 0
+    fi
+
+    if [[ -n "$GPU_LIST" ]]; then
+        gpu_lines="$GPU_LIST"
+    elif command -v lspci &> /dev/null; then
+        gpu_lines=$(lspci -nn | grep -iE "VGA|Display|3D" | grep -i amd || true)
+    fi
+
+    if [[ -n "$gpu_lines" ]] && echo "$gpu_lines" | grep -qiE "Ryzen AI|Strix|Hawk|Phoenix|Rembrandt|Mendocino|Krackan|Kraken|Radeon (740M|760M|780M|860M|880M|890M|8050S|8060S)"; then
+        return 0
+    fi
+
+    return 1
+}
+
+driver_mode_resolution_label() {
+    case "$DRIVER_MODE" in
+        auto)
+            if detect_ryzen_apu_target; then
+                echo "Inbox"
+            else
+                echo "DKMS"
+            fi
+            ;;
+        inbox)
+            echo "Inbox"
+            ;;
+        dkms)
+            echo "DKMS"
+            ;;
+        *)
+            echo "Unknown"
+            ;;
+    esac
+}
+
+driver_mode_display() {
+    case "$DRIVER_MODE" in
+        auto)
+            if [[ -n "$DRIVER_MODE_RESOLVED" ]]; then
+                case "$DRIVER_MODE_RESOLVED" in
+                    inbox) echo "Auto (resolved: Inbox)" ;;
+                    dkms) echo "Auto (resolved: DKMS)" ;;
+                    *) echo "Auto (resolved: $(driver_mode_resolution_label))" ;;
+                esac
+            else
+                echo "Auto (resolved: $(driver_mode_resolution_label))"
+            fi
+            ;;
+        inbox)
+            echo "Inbox"
+            ;;
+        dkms)
+            echo "DKMS"
+            ;;
+        *)
+            echo "Unknown"
+            ;;
+    esac
+}
+
+dkms_cleanup_policy_display() {
+    case "$DKMS_CLEANUP_POLICY" in
+        auto)
+            echo "Auto"
+            ;;
+        ask)
+            echo "Ask"
+            ;;
+        always)
+            echo "Always"
+            ;;
+        never)
+            echo "Never"
+            ;;
+        *)
+            echo "Unknown"
+            ;;
+    esac
+}
+
+cycle_driver_mode() {
+    case "$DRIVER_MODE" in
+        auto)
+            DRIVER_MODE="inbox"
+            ;;
+        inbox)
+            DRIVER_MODE="dkms"
+            ;;
+        dkms)
+            DRIVER_MODE="auto"
+            ;;
+        *)
+            DRIVER_MODE="auto"
+            ;;
+    esac
+
+}
+
+cycle_dkms_cleanup_policy() {
+    case "$DKMS_CLEANUP_POLICY" in
+        auto)
+            DKMS_CLEANUP_POLICY="ask"
+            ;;
+        ask)
+            DKMS_CLEANUP_POLICY="always"
+            ;;
+        always)
+            DKMS_CLEANUP_POLICY="never"
+            ;;
+        never|*)
+            DKMS_CLEANUP_POLICY="auto"
+            ;;
+    esac
+}
+
+detect_existing_amdgpu_dkms() {
+    case "$PKG_MGR" in
+        apt)
+            if dpkg -l amdgpu-dkms 2>/dev/null | grep -q "^ii"; then
+                return 0
+            fi
+
+            if command -v dkms &> /dev/null && dkms status 2>/dev/null | grep -qi '^amdgpu/'; then
+                return 0
+            fi
+            ;;
+        dnf)
+            if rpm -q amdgpu-dkms >/dev/null 2>&1; then
+                return 0
+            fi
+
+            if command -v dkms &> /dev/null && dkms status 2>/dev/null | grep -qi '^amdgpu/'; then
+                return 0
+            fi
+            ;;
+    esac
+
+    return 1
+}
+
+detect_amdgpu_dkms_package() {
+    case "$PKG_MGR" in
+        apt)
+            dpkg -l amdgpu-dkms 2>/dev/null | grep -q "^ii"
+            ;;
+        dnf)
+            rpm -q amdgpu-dkms >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+cleanup_existing_amdgpu_dkms() {
+    if [[ "$DRIVER_MODE_RESOLVED" != "inbox" ]]; then
+        return 0
+    fi
+
+    if ! detect_existing_amdgpu_dkms; then
+        return 0
+    fi
+
+    case "$DKMS_CLEANUP_POLICY" in
+        never)
+            warn "Existing amdgpu-dkms detected, but cleanup policy is never; skipping removal"
+            return 0
+            ;;
+        always)
+            ;;
+        ask|auto)
+            if [[ "$NON_INTERACTIVE" == "true" ]]; then
+                warn "Existing amdgpu-dkms detected, but cleanup policy is ${DKMS_CLEANUP_POLICY}; skipping removal in non-interactive mode"
+                return 0
+            fi
+
+            echo ""
+            draw_box "Existing amdgpu-dkms Detected"
+            echo ""
+            echo -e "  Existing amdgpu-dkms packages were detected."
+            echo -e "  Driver mode resolves to inbox, so this install can remove them first."
+            echo -e "  Cleanup policy: ${CYAN}$(dkms_cleanup_policy_display)${NC}"
+            echo ""
+            read -p "  Remove existing amdgpu-dkms before continuing? (y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                warn "Skipping amdgpu-dkms cleanup by user choice"
+                return 0
+            fi
+            ;;
+        *)
+            warn "Invalid DKMS cleanup policy: $DKMS_CLEANUP_POLICY"
+            return 0
+            ;;
+    esac
+
+    echo ""
+    draw_box "Cleaning Up Existing amdgpu-dkms"
+    echo ""
+
+    case "$PKG_MGR" in
+        apt)
+            if detect_amdgpu_dkms_package; then
+                apt-get purge -y amdgpu-dkms || error "Failed to remove amdgpu-dkms"
+            else
+                warn "amdgpu-dkms package is not installed; any stale DKMS module entries must be removed manually"
+                return 0
+            fi
+            ;;
+        dnf)
+            if detect_amdgpu_dkms_package; then
+                dnf remove -y amdgpu-dkms || error "Failed to remove amdgpu-dkms"
+            else
+                warn "amdgpu-dkms package is not installed; any stale DKMS module entries must be removed manually"
+                return 0
+            fi
+            ;;
+        *)
+            warn "Unsupported package manager '$PKG_MGR' for amdgpu-dkms cleanup; skipping"
+            return 0
+            ;;
+    esac
+
+    if detect_existing_amdgpu_dkms; then
+        warn "amdgpu-dkms package removal completed, but DKMS still reports amdgpu entries; manual cleanup may be required"
+        return 0
+    fi
+
+    echo -e "  ${GREEN}✓${NC} amdgpu-dkms cleanup complete"
+}
+
+resolve_driver_mode() {
+    case "$DRIVER_MODE" in
+        auto)
+            if detect_ryzen_apu_target; then
+                NO_DKMS=true
+                DRIVER_MODE_RESOLVED="inbox"
+                warn "Auto driver mode detected a Ryzen APU; using inbox driver"
+            else
+                if [[ "$NO_DKMS_CLI_SPECIFIED" != "true" ]]; then
+                    NO_DKMS=false
+                fi
+                DRIVER_MODE_RESOLVED="dkms"
+            fi
+            ;;
+        inbox)
+            NO_DKMS=true
+            DRIVER_MODE_RESOLVED="inbox"
+            ;;
+        dkms)
+            NO_DKMS=false
+            DRIVER_MODE_RESOLVED="dkms"
+            if is_ryzen_apu_arch "$GPU_ARCH" || detect_ryzen_apu_target; then
+                warn "Driver mode forced to DKMS on a Ryzen APU; this may be unsupported"
+            fi
+            ;;
+        *)
+            error "Invalid driver mode: $DRIVER_MODE"
             ;;
     esac
 }
@@ -1389,7 +1664,7 @@ show_main_menu() {
                 echo ""
                 echo -e "${GREEN}Quick Install Mode${NC}"
                 echo -e "Version: ${CYAN}$ROCM_VERSION${NC}"
-                echo -e "DKMS: ${GREEN}Enabled${NC}"
+                echo -e "Driver Mode: ${CYAN}$(driver_mode_display)${NC}"
                 echo -e "SSH: ${GREEN}Configure${NC}"
                 echo -e "Reboot: ${GREEN}Immediate${NC}"
                 echo ""
@@ -1438,6 +1713,7 @@ show_main_menu() {
                     echo ""
                     echo -e "${GREEN}Quick Install Mode${NC}"
                     echo -e "Version: ${CYAN}$ROCM_VERSION${NC}"
+                    echo -e "Driver Mode: ${CYAN}$(driver_mode_display)${NC}"
                     echo ""
                     return 0
                     ;;
@@ -1481,17 +1757,20 @@ get_reboot_display() {
 }
 
 show_options_menu() {
-    local dkms_status
+    local driver_mode_status
+    local dkms_cleanup_status
     local ssh_status
     local reboot_status
-    dkms_status=$(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)
+    driver_mode_status=$(driver_mode_display)
+    dkms_cleanup_status=$(dkms_cleanup_policy_display)
     ssh_status=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)
     reboot_status=$(get_reboot_display)
 
     if [[ "$USE_FZF" == "true" ]]; then
         # FZF menu
         local options=(
-            "dkms     Toggle DKMS Driver (currently: $dkms_status)"
+            "driver   Driver Mode (currently: $driver_mode_status)"
+            "cleanup  DKMS Cleanup Policy (currently: $dkms_cleanup_status)"
             "ssh      Toggle SSH Configuration (currently: $ssh_status)"
             "reboot   Change Reboot Strategy (currently: $reboot_status)"
             "packages Manage Extra Packages (${#EXTRA_PACKAGES[@]} packages)"
@@ -1520,9 +1799,14 @@ show_options_menu() {
         action=$(echo "$selection" | awk '{print $1}')
 
         case "$action" in
-            dkms)
-                NO_DKMS=$(if [[ "$NO_DKMS" == "true" ]]; then echo "false"; else echo "true"; fi)
-                echo -e "${GREEN}✓${NC} DKMS Driver: $(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)"
+            driver)
+                cycle_driver_mode
+                echo -e "${GREEN}✓${NC} Driver Mode: $(driver_mode_display)"
+                show_options_menu
+                ;;
+            cleanup)
+                cycle_dkms_cleanup_policy
+                echo -e "${GREEN}✓${NC} DKMS Cleanup Policy: $(dkms_cleanup_policy_display)"
                 show_options_menu
                 ;;
             ssh)
@@ -1556,7 +1840,8 @@ show_options_menu() {
     else
         # Fallback: bash select
         local options=(
-            "Toggle DKMS Driver (currently: $dkms_status)"
+            "Driver Mode (currently: $driver_mode_status)"
+            "DKMS Cleanup Policy (currently: $dkms_cleanup_status)"
             "Toggle SSH Configuration (currently: $ssh_status)"
             "Change Reboot Strategy (currently: $reboot_status)"
             "Manage Extra Packages (${#EXTRA_PACKAGES[@]} packages)"
@@ -1575,39 +1860,45 @@ show_options_menu() {
         select opt in "${options[@]}"; do
             case "$REPLY" in
                 1)
-                    NO_DKMS=$(if [[ "$NO_DKMS" == "true" ]]; then echo "false"; else echo "true"; fi)
-                    echo -e "${GREEN}✓${NC} DKMS Driver: $(if [[ "$NO_DKMS" == "true" ]]; then echo "Disabled"; else echo "Enabled"; fi)"
+                    cycle_driver_mode
+                    echo -e "${GREEN}✓${NC} Driver Mode: $(driver_mode_display)"
                     show_options_menu
                     return
                     ;;
                 2)
+                    cycle_dkms_cleanup_policy
+                    echo -e "${GREEN}✓${NC} DKMS Cleanup Policy: $(dkms_cleanup_policy_display)"
+                    show_options_menu
+                    return
+                    ;;
+                3)
                     SKIP_SSH=$(if [[ "$SKIP_SSH" == "true" ]]; then echo "false"; else echo "true"; fi)
                     echo -e "${GREEN}✓${NC} SSH Configuration: $(if [[ "$SKIP_SSH" == "true" ]]; then echo "Skip"; else echo "Configure"; fi)"
                     show_options_menu
                     return
                     ;;
-                3)
+                4)
                     show_reboot_menu
                     return
                     ;;
-                4)
+                5)
                     show_packages_menu
                     return
                     ;;
-                5)
+                6)
                     echo ""
                     return 0
                     ;;
-                6)
+                7)
                     show_version_menu
                     show_options_menu
                     return
                     ;;
-                7)
+                8)
                     show_main_menu
                     return
                     ;;
-                8)
+                9)
                     echo "Installation cancelled."
                     exit 0
                     ;;
@@ -2352,10 +2643,20 @@ step_therock_driver() {
     draw_box "Step 6: GPU Driver Configuration"
     echo ""
 
-    if is_apu_gpu "$GPU_ARCH"; then
-        log "Ryzen AI APU detected - using kernel driver"
+    if [[ "$DRIVER_MODE" == "inbox" ]]; then
+        log "Driver mode set to inbox - skipping GPU driver installation"
+        echo -e "  ${GREEN}✓${NC} Inbox driver mode selected (no amdgpu-install needed)"
+        return 0
+    fi
+
+    if [[ "$DRIVER_MODE" == "auto" ]] && detect_ryzen_apu_target; then
+        log "Ryzen APU detected - using inbox driver"
         echo -e "  ${GREEN}✓${NC} APU uses built-in kernel driver (no amdgpu-install needed)"
         return 0
+    fi
+
+    if [[ "$DRIVER_MODE" == "dkms" ]] && ( is_ryzen_apu_arch "$GPU_ARCH" || detect_ryzen_apu_target ); then
+        warn "Forcing DKMS on a Ryzen APU; continuing with driver installation"
     fi
 
     # For Instinct GPUs, install stable driver
@@ -2721,7 +3022,9 @@ Options:
   --reboot-delay MIN     Delay reboot for MIN minutes (0=immediate, default: 0)
   --verify-only          Only verify existing installation
   --uninstall            Remove ROCm
+  --driver-mode MODE     Driver mode: auto (default), inbox, or dkms
   --no-dkms              Skip DKMS driver (use pre-built)
+  --dkms-cleanup POLICY  DKMS cleanup policy: auto (default), ask, always, or never
   --non-interactive      Run without prompts (use with --version or --latest)
   --help                 Show this help
 
@@ -2733,7 +3036,10 @@ TheRock Options (for pre-release versions like 7.9.0+):
 GPU Architecture Reference:
   gfx950-dcgpu    MI355X, MI350X
   gfx94X-dcgpu    MI325X, MI300X, MI300A
+  gfx1150         Ryzen AI APUs
   gfx1151         Ryzen AI APUs (Strix, Hawk)
+  gfx1152         Ryzen AI APUs
+  gfx1103         Ryzen AI APUs
 
 Examples:
   sudo $0                                      # Interactive mode
@@ -2743,9 +3049,13 @@ Examples:
   sudo $0 --latest --root-password 123         # Set root password
   sudo $0 --verify-only                        # Check installation
   sudo $0 --uninstall                          # Remove ROCm
+  sudo $0 --latest --driver-mode inbox         # Use inbox driver mode
 
   # Automated installation for scripts
   sudo $0 --latest --non-interactive --reboot-delay 5
+
+  # Ryzen APU systems should use inbox drivers
+  sudo $0 --latest --driver-mode inbox
 
   # TheRock pre-release installation
   sudo $0 --version 7.9.0 --gpu-arch gfx94X-dcgpu --non-interactive --skip-reboot
@@ -2772,7 +3082,36 @@ parse_args() {
             --reboot-delay) REBOOT_DELAY="$2"; shift 2 ;;
             --verify-only) VERIFY_ONLY=true; shift ;;
             --uninstall) UNINSTALL=true; shift ;;
-            --no-dkms) NO_DKMS=true; shift ;;
+            --driver-mode)
+                case "$2" in
+                    auto|inbox|dkms)
+                        DRIVER_MODE="$2"
+                        DRIVER_MODE_CLI_VALUE="$2"
+                        if [[ "$DRIVER_MODE" == "inbox" ]]; then
+                            NO_DKMS=true
+                        elif [[ "$DRIVER_MODE" == "dkms" ]]; then
+                            NO_DKMS=false
+                        fi
+                        ;;
+                    *)
+                        error "Invalid driver mode: $2 (expected auto, inbox, or dkms)"
+                        ;;
+                esac
+                shift 2 ;;
+            --dkms-cleanup)
+                case "$2" in
+                    auto|ask|always|never)
+                        DKMS_CLEANUP_POLICY="$2"
+                        ;;
+                    *)
+                        error "Invalid DKMS cleanup policy: $2 (expected auto, ask, always, or never)"
+                        ;;
+                esac
+                shift 2 ;;
+            --no-dkms)
+                NO_DKMS=true
+                NO_DKMS_CLI_SPECIFIED=true
+                shift ;;
             --non-interactive) NON_INTERACTIVE=true; shift ;;
             --gpu-arch) GPU_ARCH="$2"; shift 2 ;;
             --therock-method) THEROCK_INSTALL_METHOD="$2"; shift 2 ;;
@@ -2781,6 +3120,14 @@ parse_args() {
             *) error "Unknown option: $1" ;;
         esac
     done
+
+    if [[ "$NO_DKMS_CLI_SPECIFIED" == "true" ]] && [[ "$DRIVER_MODE_CLI_VALUE" == "dkms" ]]; then
+        error "Conflicting driver flags: --no-dkms cannot be combined with --driver-mode dkms"
+    fi
+
+    if [[ "$NO_DKMS_CLI_SPECIFIED" == "true" ]] && [[ -z "$DRIVER_MODE_CLI_VALUE" ]]; then
+        DRIVER_MODE="auto"
+    fi
 }
 
 #######################################
@@ -2940,6 +3287,9 @@ main() {
             fi
         fi
     fi
+
+    resolve_driver_mode
+    cleanup_existing_amdgpu_dkms
 
     # Installation
     echo ""
