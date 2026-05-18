@@ -588,6 +588,13 @@ detect_ryzen_apu_target() {
         return 0
     fi
 
+    local detected_arch
+    detected_arch=$(detect_gpu_architecture)
+    if is_ryzen_apu_arch "$detected_arch"; then
+        GPU_ARCH="$detected_arch"
+        return 0
+    fi
+
     return 1
 }
 
