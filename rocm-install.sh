@@ -2,7 +2,7 @@
 #
 # ROCm Unified Installation Script
 # Supports: ROCm 6.x, 7.x and future versions
-# Platforms: Ubuntu 22.04, 24.04, RHEL 9.x, Debian 12
+# Platforms: Ubuntu 22.04, 24.04, 26.04; Debian 12, 13; RHEL/Rocky/AlmaLinux 9.x
 #
 # Features:
 #   - Auto-detect latest ROCm version from AMD repository
@@ -20,8 +20,10 @@ set -e
 # Configuration
 #######################################
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 REPO_BASE_URL="https://repo.radeon.com/amdgpu-install"
+ROCM_PACKAGES_BASE_URL="https://repo.amd.com/rocm/packages"
+ROCM_PACKAGES_KEY_URL="${ROCM_PACKAGES_BASE_URL}/gpg/rocm.gpg"
 
 # Colors (using $'...' syntax so bash interprets escape sequences at assignment)
 RED=$'\033[0;31m'
@@ -351,14 +353,26 @@ detect_gpu_architecture() {
         local gpu_info
         gpu_info=$(lspci -nn | grep -iE "VGA|Display|3D" | grep -i amd || true)
 
-        # MI355X, MI350X -> gfx950-dcgpu
+        # MI355X, MI350X, MI350P -> gfx950-dcgpu
         if echo "$gpu_info" | grep -qiE "MI355|MI350|gfx950"; then
             detected_arch="gfx950-dcgpu"
         # MI325X, MI300X, MI300A -> gfx94X-dcgpu
         elif echo "$gpu_info" | grep -qiE "MI325|MI300|gfx94"; then
             detected_arch="gfx94X-dcgpu"
-        # Ryzen AI APUs -> gfx1151
-        elif echo "$gpu_info" | grep -qiE "gfx1151|Strix|Hawk"; then
+        elif echo "$gpu_info" | grep -qiE "R9700|RX 9070|gfx1201"; then
+            detected_arch="gfx1201"
+        elif echo "$gpu_info" | grep -qiE "RX 9060|gfx1200"; then
+            detected_arch="gfx1200"
+        elif echo "$gpu_info" | grep -qiE "W7900|W7800|RX 7900|gfx1100"; then
+            detected_arch="gfx1100"
+        elif echo "$gpu_info" | grep -qiE "W7700|RX 7800|RX 7700|V710|gfx1101"; then
+            detected_arch="gfx1101"
+        elif echo "$gpu_info" | grep -qiE "RX 7600|gfx1102"; then
+            detected_arch="gfx1102"
+        elif echo "$gpu_info" | grep -qiE "W6800|V620|gfx1030"; then
+            detected_arch="gfx1030"
+        # Ryzen AI APUs
+        elif echo "$gpu_info" | grep -qiE "gfx115[0-3]|gfx1103|Strix|Hawk|Krackan|Kraken"; then
             detected_arch="gfx1151"
         fi
     fi
@@ -372,8 +386,16 @@ detect_gpu_architecture() {
             detected_arch="gfx950-dcgpu"
         elif echo "$rocm_info" | grep -qE "gfx94[0-9]"; then
             detected_arch="gfx94X-dcgpu"
-        elif echo "$rocm_info" | grep -qE "gfx1151"; then
-            detected_arch="gfx1151"
+        elif echo "$rocm_info" | grep -qE "gfx1201"; then
+            detected_arch="gfx1201"
+        elif echo "$rocm_info" | grep -qE "gfx1200"; then
+            detected_arch="gfx1200"
+        elif echo "$rocm_info" | grep -qE "gfx110[0-3]"; then
+            detected_arch=$(echo "$rocm_info" | grep -oE "gfx110[0-3]" | head -1)
+        elif echo "$rocm_info" | grep -qE "gfx1030"; then
+            detected_arch="gfx1030"
+        elif echo "$rocm_info" | grep -qE "gfx115[0-3]"; then
+            detected_arch=$(echo "$rocm_info" | grep -oE "gfx115[0-3]" | head -1)
         fi
     fi
 
@@ -393,6 +415,10 @@ should_use_therock() {
         return 0
     fi
 
+    if is_native_rocm_apt_version "$version"; then
+        return 1
+    fi
+
     # Pre-release versions (therock-X.Y.Z tags) use TheRock
     if is_prerelease "$version"; then
         return 0
@@ -408,6 +434,12 @@ version_ge() {
     [[ "$(printf '%s\n%s\n' "$minimum" "$version" | sort -V | head -n1)" == "$minimum" ]]
 }
 
+is_native_rocm_apt_version() {
+    local version="$1"
+
+    [[ "$version" == "7.13" || "$version" == "7.13.0" ]]
+}
+
 normalize_repo_version() {
     local version="$1"
 
@@ -420,6 +452,9 @@ normalize_repo_version() {
 
 get_apt_repo_codename() {
     case "$OS_ID:$OS_VERSION" in
+        ubuntu:26.04)
+            echo "resolute"
+            ;;
         ubuntu:22.04|debian:12)
             echo "jammy"
             ;;
@@ -436,6 +471,68 @@ get_apt_repo_codename() {
             error "Apt codename is only available for Ubuntu/Debian systems"
             ;;
     esac
+}
+
+get_rocm_packages_repo_slug() {
+    case "$OS_ID:$OS_VERSION" in
+        ubuntu:26.04)
+            echo "ubuntu2604"
+            ;;
+        ubuntu:24.04)
+            echo "ubuntu2404"
+            ;;
+        ubuntu:22.04)
+            echo "ubuntu2204"
+            ;;
+        debian:13)
+            echo "debian13"
+            ;;
+        debian:12)
+            echo "debian12"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+install_native_rocm_apt_repo() {
+    local version="$1"
+    local repo_slug
+
+    if ! is_native_rocm_apt_version "$version"; then
+        return 1
+    fi
+
+    if ! repo_slug=$(get_rocm_packages_repo_slug); then
+        error "ROCm ${version} native apt packages are not configured for ${OS_NAME}"
+    fi
+
+    mkdir -p /etc/apt/keyrings
+    chmod 0755 /etc/apt/keyrings
+
+    if [[ ! -s /etc/apt/keyrings/amdrocm.gpg ]]; then
+        if command -v curl &> /dev/null; then
+            curl -fsSL "$ROCM_PACKAGES_KEY_URL" | gpg --dearmor > /etc/apt/keyrings/amdrocm.gpg
+        elif command -v wget &> /dev/null; then
+            wget -qO- "$ROCM_PACKAGES_KEY_URL" | gpg --dearmor > /etc/apt/keyrings/amdrocm.gpg
+        else
+            error "curl or wget is required to download the ROCm apt repository key"
+        fi
+        chmod 0644 /etc/apt/keyrings/amdrocm.gpg
+    fi
+
+    cat > /etc/apt/sources.list.d/rocm.list << EOF
+deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] ${ROCM_PACKAGES_BASE_URL}/${repo_slug} stable main
+EOF
+
+    cat > /etc/apt/preferences.d/rocm-pin-600 << 'EOF'
+Package: *
+Pin: origin repo.amd.com
+Pin-Priority: 600
+EOF
+
+    log "Configured ROCm ${version} native apt repository (${repo_slug})"
 }
 
 get_graphics_repo_version() {
@@ -457,6 +554,9 @@ get_amdgpu_repo_release() {
     repo_version=$(normalize_repo_version "$1")
 
     case "$repo_version" in
+        7.13|7.13.0)
+            echo "31.30"
+            ;;
         7.2.2)
             echo "30.30.1"
             ;;
@@ -469,6 +569,11 @@ get_amdgpu_repo_release() {
 repair_apt_sources() {
     local version="$1"
     local codename repo_version graphics_version amdgpu_release
+
+    if is_native_rocm_apt_version "$version"; then
+        install_native_rocm_apt_repo "$version"
+        return 0
+    fi
 
     repo_version=$(normalize_repo_version "$version")
     codename=$(get_apt_repo_codename)
@@ -549,7 +654,7 @@ apt_fix_broken_install() {
         apt-get \
         -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \
-        install -f -y "$@"
+        install -f -y
 }
 
 dpkg_install_package() {
@@ -561,7 +666,7 @@ is_ryzen_apu_arch() {
     local arch="$1"
 
     case "$arch" in
-        gfx1150|gfx1151|gfx1152|gfx1103)
+        gfx1150|gfx1151|gfx1152|gfx1153|gfx1103)
             return 0
             ;;
         *)
@@ -584,7 +689,7 @@ detect_ryzen_apu_target() {
         gpu_lines=$(lspci -nn | grep -iE "VGA|Display|3D" | grep -i amd || true)
     fi
 
-    if [[ -n "$gpu_lines" ]] && echo "$gpu_lines" | grep -qiE "Ryzen AI|Strix|Hawk|Phoenix|Rembrandt|Mendocino|Krackan|Kraken|Radeon (740M|760M|780M|860M|880M|890M|8050S|8060S)"; then
+    if [[ -n "$gpu_lines" ]] && echo "$gpu_lines" | grep -qiE "Ryzen AI|Strix|Hawk|Phoenix|Rembrandt|Mendocino|Krackan|Kraken|Radeon (740M|760M|780M|820M|840M|860M|880M|890M|8040S|8050S|8060S)"; then
         return 0
     fi
 
@@ -913,6 +1018,15 @@ fetch_versions_from_amd_repo() {
 # Pre-release versions (therock-X.Y.Z)
 PRERELEASE_VERSIONS=()
 
+sort_available_versions() {
+    local sorted_versions
+    sorted_versions=$(printf '%s\n' "${AVAILABLE_VERSIONS[@]}" | sort -Vr | uniq)
+    AVAILABLE_VERSIONS=()
+    while IFS= read -r version; do
+        [[ -n "$version" ]] && AVAILABLE_VERSIONS+=("$version")
+    done <<< "$sorted_versions"
+}
+
 # Fetch versions from GitHub releases/tags
 # Output format: VERSION or PRERELEASE:VERSION for pre-release versions
 fetch_versions_from_github() {
@@ -1009,8 +1123,22 @@ fetch_available_versions() {
 
     if [[ -s "$temp_file" ]]; then
         while IFS= read -r v; do
-            [[ -n "$v" ]] && AVAILABLE_VERSIONS+=("$v")
+            [[ -z "$v" ]] && continue
+            if [[ "$v" == PRERELEASE:* ]]; then
+                local version="${v#PRERELEASE:}"
+                AVAILABLE_VERSIONS+=("$version")
+                if is_native_rocm_apt_version "$version"; then
+                    AMD_REPO_CACHE[$version]="stable"
+                else
+                    PRERELEASE_VERSIONS+=("$version")
+                    AMD_REPO_CACHE[$version]="prerelease"
+                fi
+            else
+                AVAILABLE_VERSIONS+=("$v")
+                AMD_REPO_CACHE[$v]="stable"
+            fi
         done < "$temp_file"
+        sort_available_versions
         source_used="GitHub"
     fi
     rm -f "$temp_file"
@@ -1018,7 +1146,7 @@ fetch_available_versions() {
     # Fallback: hardcoded list
     if [[ ${#AVAILABLE_VERSIONS[@]} -eq 0 ]]; then
         warn "Cannot fetch versions from GitHub. Using cached list."
-        AVAILABLE_VERSIONS=("7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
+        AVAILABLE_VERSIONS=("7.13.0" "7.2.3" "7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
         source_used="cached"
     fi
 
@@ -1030,6 +1158,10 @@ declare -A AMD_REPO_CACHE
 
 is_prerelease() {
     local version="$1"
+
+    if is_native_rocm_apt_version "$version"; then
+        return 1
+    fi
 
     # Check if version is in the pre-release list (populated from GitHub therock- tags)
     for v in "${PRERELEASE_VERSIONS[@]}"; do
@@ -1061,6 +1193,11 @@ check_version_availability() {
     fi
 
     echo -e "  Checking version availability..."
+
+    if is_native_rocm_apt_version "$version"; then
+        AMD_REPO_CACHE[$version]="stable"
+        return 0
+    fi
 
     local check_url="${REPO_BASE_URL}/${version}/"
     local http_code
@@ -1115,6 +1252,11 @@ batch_check_versions_availability() {
     # Start parallel checks for all versions
     for version in "${AVAILABLE_VERSIONS[@]}"; do
         (
+            if is_native_rocm_apt_version "$version"; then
+                echo "stable" > "${temp_dir}/${version}"
+                exit 0
+            fi
+
             local check_url="${REPO_BASE_URL}/${version}/"
             local http_code
             http_code=$(http_status "$check_url")
@@ -1193,7 +1335,7 @@ get_latest_version() {
     if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
         echo "${AVAILABLE_VERSIONS[0]}"
     else
-        echo "7.2"
+        echo "7.13.0"
     fi
 }
 
@@ -1248,10 +1390,22 @@ get_package_url() {
     local codename=""
     local pkg_name=""
     local repo_dir_url=""
+    local amdgpu_release=""
 
     case "$OS_ID" in
         ubuntu)
             codename=$(get_apt_repo_codename)
+
+            if amdgpu_release=$(get_amdgpu_repo_release "$version"); then
+                repo_dir_url="${REPO_BASE_URL}/${amdgpu_release}/ubuntu/${codename}/"
+                pkg_name=$(fetch_package_name_from_repo "$repo_dir_url" 'amdgpu-install_[^"]+\.deb')
+
+                if [[ -n "$pkg_name" ]]; then
+                    AMDGPU_URL="${repo_dir_url}${pkg_name}"
+                    debug "Package URL from driver repo: $AMDGPU_URL"
+                    return 0
+                fi
+            fi
 
             # Try exact version directory first
             repo_dir_url="${REPO_BASE_URL}/${dir_version}/ubuntu/${codename}/"
@@ -1286,6 +1440,17 @@ get_package_url() {
 
         debian)
             codename=$(get_apt_repo_codename)
+
+            if amdgpu_release=$(get_amdgpu_repo_release "$version"); then
+                repo_dir_url="${REPO_BASE_URL}/${amdgpu_release}/ubuntu/${codename}/"
+                pkg_name=$(fetch_package_name_from_repo "$repo_dir_url" 'amdgpu-install_[^"]+\.deb')
+
+                if [[ -n "$pkg_name" ]]; then
+                    AMDGPU_URL="${repo_dir_url}${pkg_name}"
+                    return 0
+                fi
+            fi
+
             repo_dir_url="${REPO_BASE_URL}/${dir_version}/ubuntu/${codename}/"
             pkg_name=$(fetch_package_name_from_repo "$repo_dir_url" 'amdgpu-install_[^"]+\.deb')
 
@@ -1309,6 +1474,17 @@ get_package_url() {
         rhel|centos|rocky|almalinux)
             local el_version
             el_version=$(echo "$OS_VERSION" | cut -d. -f1)
+
+            if amdgpu_release=$(get_amdgpu_repo_release "$version"); then
+                repo_dir_url="${REPO_BASE_URL}/${amdgpu_release}/rhel/${OS_VERSION}/"
+                pkg_name=$(fetch_package_name_from_repo "$repo_dir_url" 'amdgpu-install-[^"]+\.rpm')
+
+                if [[ -n "$pkg_name" ]]; then
+                    AMDGPU_URL="${repo_dir_url}${pkg_name}"
+                    return 0
+                fi
+            fi
+
             repo_dir_url="${REPO_BASE_URL}/${dir_version}/rhel/${OS_VERSION}/"
             pkg_name=$(fetch_package_name_from_repo "$repo_dir_url" 'amdgpu-install-[^"]+\.rpm')
 
@@ -1373,7 +1549,7 @@ show_version_menu() {
             return
         elif [[ "$selection" == "custom"* ]]; then
             echo ""
-            read -r -p "Enter ROCm version (e.g., 7.2, 6.4.2): " ROCM_VERSION
+            read -r -p "Enter ROCm version (e.g., 7.13.0, 7.2.3): " ROCM_VERSION
             if [[ -z "$ROCM_VERSION" ]]; then
                 echo -e "${RED}No version entered${NC}"
                 show_version_menu
@@ -1416,7 +1592,7 @@ show_version_menu() {
                 $((${#options[@]}-2)))
                     # Enter custom version
                     echo ""
-                    read -r -p "Enter ROCm version (e.g., 7.2, 6.4.2): " custom_version
+                    read -r -p "Enter ROCm version (e.g., 7.13.0, 7.2.3): " custom_version
                     if [[ -n "$custom_version" ]]; then
                         ROCM_VERSION="$custom_version"
                         break
@@ -1489,13 +1665,43 @@ show_gpu_arch_menu() {
 
         # Add all architecture options
         if [[ "$detected_arch" != "gfx950-dcgpu" ]]; then
-            options+=("gfx950-dcgpu   MI355X, MI350X")
+            options+=("gfx950-dcgpu   MI355X, MI350X, MI350P")
         fi
         if [[ "$detected_arch" != "gfx94X-dcgpu" ]]; then
             options+=("gfx94X-dcgpu   MI325X, MI300X, MI300A")
         fi
+        if [[ "$detected_arch" != "gfx1201" ]]; then
+            options+=("gfx1201        Radeon RX 9070 / AI PRO R9700")
+        fi
+        if [[ "$detected_arch" != "gfx1200" ]]; then
+            options+=("gfx1200        Radeon RX 9060")
+        fi
+        if [[ "$detected_arch" != "gfx1100" ]]; then
+            options+=("gfx1100        Radeon RX 7900 / PRO W7900/W7800")
+        fi
+        if [[ "$detected_arch" != "gfx1101" ]]; then
+            options+=("gfx1101        Radeon RX 7800/7700 / PRO W7700/V710")
+        fi
+        if [[ "$detected_arch" != "gfx1102" ]]; then
+            options+=("gfx1102        Radeon RX 7600")
+        fi
+        if [[ "$detected_arch" != "gfx1030" ]]; then
+            options+=("gfx1030        Radeon PRO W6800/V620")
+        fi
+        if [[ "$detected_arch" != "gfx1150" ]]; then
+            options+=("gfx1150        Ryzen AI APUs")
+        fi
         if [[ "$detected_arch" != "gfx1151" ]]; then
             options+=("gfx1151        Ryzen AI APUs (Strix, Hawk)")
+        fi
+        if [[ "$detected_arch" != "gfx1152" ]]; then
+            options+=("gfx1152        Ryzen AI APUs")
+        fi
+        if [[ "$detected_arch" != "gfx1153" ]]; then
+            options+=("gfx1153        Ryzen AI APUs")
+        fi
+        if [[ "$detected_arch" != "gfx1103" ]]; then
+            options+=("gfx1103        Ryzen AI APUs")
         fi
 
         options+=("back           ← Back to version selection")
@@ -1533,9 +1739,19 @@ show_gpu_arch_menu() {
             options+=("$detected_arch (Auto-detected)")
         fi
 
-        options+=("gfx950-dcgpu (MI355X, MI350X)")
+        options+=("gfx950-dcgpu (MI355X, MI350X, MI350P)")
         options+=("gfx94X-dcgpu (MI325X, MI300X, MI300A)")
+        options+=("gfx1201 (Radeon RX 9070 / AI PRO R9700)")
+        options+=("gfx1200 (Radeon RX 9060)")
+        options+=("gfx1100 (Radeon RX 7900 / PRO W7900/W7800)")
+        options+=("gfx1101 (Radeon RX 7800/7700 / PRO W7700/V710)")
+        options+=("gfx1102 (Radeon RX 7600)")
+        options+=("gfx1030 (Radeon PRO W6800/V620)")
+        options+=("gfx1150 (Ryzen AI APUs)")
         options+=("gfx1151 (Ryzen AI APUs)")
+        options+=("gfx1152 (Ryzen AI APUs)")
+        options+=("gfx1153 (Ryzen AI APUs)")
+        options+=("gfx1103 (Ryzen AI APUs)")
         options+=("Back to version selection")
         options+=("Quit")
 
@@ -2388,6 +2604,14 @@ step_install_amdgpu() {
     draw_box "Step 4: Installing AMDGPU Driver"
     echo ""
 
+    if [[ "$PKG_MGR" == "apt" ]] && is_native_rocm_apt_version "$ROCM_VERSION" && [[ "$DRIVER_MODE_RESOLVED" == "inbox" ]]; then
+        log "Inbox driver mode selected; configuring ROCm native apt repository and skipping AMDGPU DKMS installer"
+        install_native_rocm_apt_repo "$ROCM_VERSION"
+        apt-get update
+        echo -e "\n  ${GREEN}✓${NC} AMDGPU driver installation skipped (inbox mode)"
+        return 0
+    fi
+
     get_package_url "$ROCM_VERSION"
     log "Downloading from: $AMDGPU_URL"
 
@@ -2433,9 +2657,18 @@ step_install_rocm() {
 
     case "$PKG_MGR" in
         apt)
+            if is_native_rocm_apt_version "$ROCM_VERSION"; then
+                install_native_rocm_apt_repo "$ROCM_VERSION"
+                apt-get update
+            fi
+
             if ! apt_has_package rocm; then
                 repair_apt_sources "$ROCM_VERSION"
                 apt-get update
+            fi
+
+            if is_native_rocm_apt_version "$ROCM_VERSION"; then
+                apt_install libatomic1 libquadmath0 python3-setuptools python3-wheel || true
             fi
 
             if [[ "$NO_DKMS" != "true" ]]; then
@@ -3021,7 +3254,7 @@ ROCm Unified Installation Script v${SCRIPT_VERSION}
 Usage: sudo $0 [options]
 
 Options:
-  --version VERSION      Install specific ROCm version (e.g., 7.2, 6.4.2)
+  --version VERSION      Install specific ROCm version (e.g., 7.13.0, 7.2.3)
   --latest               Install latest available version
   --root-password PASS   Set root password during installation
   --skip-ssh             Skip SSH configuration
@@ -3036,22 +3269,29 @@ Options:
   --help                 Show this help
 
 TheRock Options (for pre-release versions like 7.9.0+):
-  --gpu-arch ARCH        GPU architecture: gfx950-dcgpu, gfx94X-dcgpu, or gfx1151
+  --gpu-arch ARCH        GPU architecture (for example gfx950-dcgpu, gfx94X-dcgpu, gfx1151)
   --therock-method MTD   Installation method: pip (default) or tarball
   --therock              Force TheRock installation mode
 
 GPU Architecture Reference:
-  gfx950-dcgpu    MI355X, MI350X
+  gfx950-dcgpu    MI355X, MI350X, MI350P
   gfx94X-dcgpu    MI325X, MI300X, MI300A
+  gfx1201         Radeon RX 9070 / Radeon AI PRO R9700 series
+  gfx1200         Radeon RX 9060 series
+  gfx1100         Radeon RX 7900 / PRO W7900/W7800 series
+  gfx1101         Radeon RX 7800/7700 / PRO W7700/V710 series
+  gfx1102         Radeon RX 7600 series
+  gfx1030         Radeon PRO W6800/V620
   gfx1150         Ryzen AI APUs
   gfx1151         Ryzen AI APUs (Strix, Hawk)
   gfx1152         Ryzen AI APUs
+  gfx1153         Ryzen AI APUs
   gfx1103         Ryzen AI APUs
 
 Examples:
   sudo $0                                      # Interactive mode
   sudo $0 --latest                             # Install latest, reboot immediately
-  sudo $0 --version 7.2 --reboot-delay 10      # Install ROCm 7.2, reboot in 10 min
+  sudo $0 --version 7.13.0 --reboot-delay 10   # Install ROCm 7.13, reboot in 10 min
   sudo $0 --latest --skip-reboot               # Install without reboot
   sudo $0 --latest --root-password 123         # Set root password
   sudo $0 --verify-only                        # Check installation
@@ -3069,7 +3309,7 @@ Examples:
   sudo $0 --version 7.9.0 --gpu-arch gfx1151 --therock-method tarball
 
 Supported:
-  Ubuntu 22.04, 24.04 | Debian 12 | RHEL/Rocky 9.x
+  Ubuntu 22.04, 24.04, 26.04 | Debian 12, 13 | RHEL/Rocky 9.x
 
 EOF
 }
@@ -3224,17 +3464,22 @@ main() {
             if [[ "$line" == PRERELEASE:* ]]; then
                 local v="${line#PRERELEASE:}"
                 AVAILABLE_VERSIONS+=("$v")
-                PRERELEASE_VERSIONS+=("$v")
-                AMD_REPO_CACHE[$v]="prerelease"
+                if is_native_rocm_apt_version "$v"; then
+                    AMD_REPO_CACHE[$v]="stable"
+                else
+                    PRERELEASE_VERSIONS+=("$v")
+                    AMD_REPO_CACHE[$v]="prerelease"
+                fi
             else
                 AVAILABLE_VERSIONS+=("$line")
                 AMD_REPO_CACHE[$line]="stable"
             fi
         done < "$versions_temp_file"
         echo -e "  ${GREEN}✓${NC} Found ${#AVAILABLE_VERSIONS[@]} versions (${#PRERELEASE_VERSIONS[@]} pre-release)"
+        sort_available_versions
     else
         warn "Cannot fetch versions from GitHub. Using cached list."
-        AVAILABLE_VERSIONS=("7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
+        AVAILABLE_VERSIONS=("7.13.0" "7.2.3" "7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
         for v in "${AVAILABLE_VERSIONS[@]}"; do
             AMD_REPO_CACHE[$v]="stable"
         done

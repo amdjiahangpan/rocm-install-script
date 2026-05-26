@@ -6,7 +6,7 @@ A one-click installation script for AMD ROCm platform that supports multiple ver
 
 - **Auto-detect latest ROCm version** from AMD repository
 - **Interactive TUI menu** for version selection
-- **Multi-distribution support**: Ubuntu 22.04/24.04, Debian 12, RHEL 9.x
+- **Multi-distribution support**: Ubuntu 22.04/24.04/26.04, Debian 12/13, RHEL 9.x
 - **Automatic GPU detection**
 - **Kernel version locking** to prevent driver incompatibility
 - **Complete environment configuration**
@@ -54,7 +54,7 @@ This will show an interactive menu where you can:
 sudo ./rocm-install.sh [options]
 
 Options:
-  --version VERSION      Install specific ROCm version (e.g., 7.2, 6.4.2)
+  --version VERSION      Install specific ROCm version (e.g., 7.13.0, 7.2.3)
   --latest               Install latest available version
   --skip-ssh             Skip SSH configuration
   --skip-reboot          Skip reboot after installation
@@ -79,7 +79,7 @@ sudo bash rocm-install.sh
 curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest
 
 # One-line: Install specific version
-curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --version 7.2
+curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --version 7.13.0
 
 # One-line: Install with 10-minute delayed reboot
 curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest --reboot-delay 10
@@ -110,8 +110,8 @@ curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/u
 
 | Distribution | Versions | Status |
 |-------------|----------|--------|
-| Ubuntu | 22.04, 24.04 | ✅ Fully Supported |
-| Debian | 12 | ✅ Supported |
+| Ubuntu | 22.04, 24.04, 26.04 | ✅ Supported |
+| Debian | 12, 13 | ✅ Supported |
 | RHEL/Rocky/AlmaLinux | 9.x | ✅ Supported |
 
 ## What Gets Installed
@@ -120,6 +120,14 @@ curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/u
 - AMDGPU driver (DKMS or pre-built)
 - ROCm runtime and libraries
 - rocminfo, rocm-smi, clinfo
+
+For ROCm 7.13 on apt-based systems, the script uses AMD's native ROCm package
+repository (`repo.amd.com/rocm/packages/<distro>`) for ROCm userspace and
+installs the `rocm` apt meta-package. If DKMS driver mode is selected, the
+AMDGPU driver installer still comes from AMD's matching `amdgpu-install` 31.30
+repository; inbox driver mode skips that driver installer. Older production
+releases keep the existing `amdgpu-install` repository bootstrap path for ROCm
+packages too.
 
 ### Extra Packages (configurable)
 - python3-setuptools, python3-wheel, python3-pip
@@ -178,7 +186,7 @@ sudo ./rocm-install.sh --latest --no-dkms
 ### Ryzen AI APU systems
 Driver mode defaults to `auto`, which uses inbox driver mode when a Ryzen APU is
 detected. The script treats exact Ryzen APU targets such as `gfx1150`,
-`gfx1151`, `gfx1152`, and `gfx1103` conservatively. To force the AMD-recommended
+`gfx1151`, `gfx1152`, `gfx1153`, and `gfx1103` conservatively. To force the AMD-recommended
 Ryzen APU path explicitly:
 ```bash
 sudo ./rocm-install.sh --latest --driver-mode inbox
