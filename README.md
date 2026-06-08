@@ -54,7 +54,7 @@ This will show an interactive menu where you can:
 sudo ./rocm-install.sh [options]
 
 Options:
-  --version VERSION      Install specific ROCm version (e.g., 7.13.0, 7.2.3)
+  --version VERSION      Install specific ROCm version (e.g., 7.13.0, 7.2.4)
   --latest               Install latest available version
   --skip-ssh             Skip SSH configuration
   --skip-reboot          Skip reboot after installation
@@ -121,13 +121,14 @@ curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/u
 - ROCm runtime and libraries
 - rocminfo, rocm-smi, clinfo
 
-For ROCm 7.13 on apt-based systems, the script uses AMD's native ROCm package
-repository (`repo.amd.com/rocm/packages/<distro>`) for ROCm userspace and
-installs the `rocm` apt meta-package. If DKMS driver mode is selected, the
-AMDGPU driver installer still comes from AMD's matching `amdgpu-install` 31.30
-repository; inbox driver mode skips that driver installer. Older production
-releases keep the existing `amdgpu-install` repository bootstrap path for ROCm
-packages too.
+For ROCm 7.13 on apt-based Ryzen systems, the script follows AMD's technology
+preview package-manager path: it configures AMD's native ROCm package repository
+(`repo.amd.com/rocm/packages/<distro>`) and installs the matching architecture
+meta-package, such as `amdrocm7.13-gfx110x` for `gfx1103` APUs. If DKMS driver
+mode is selected, the AMDGPU driver installer still comes from AMD's matching
+`amdgpu-install` 31.30 repository; inbox driver mode skips that driver installer.
+Older production releases keep the existing `amdgpu-install` repository
+bootstrap path for ROCm packages too.
 
 ### Extra Packages (configurable)
 - python3-setuptools, python3-wheel, python3-pip

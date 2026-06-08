@@ -142,7 +142,7 @@ draw_box() {
 
 # Print header
 print_header() {
-    clear
+    clear 2>/dev/null || true
     echo ""
     echo -e "${CYAN}  ██████╗  ██████╗  ██████╗███╗   ███╗${NC}"
     echo -e "${CYAN}  ██╔══██╗██╔═══██╗██╔════╝████╗ ████║${NC}"
@@ -440,6 +440,57 @@ is_native_rocm_apt_version() {
     [[ "$version" == "7.13" || "$version" == "7.13.0" ]]
 }
 
+get_native_rocm_apt_package() {
+    local version="$1"
+    local arch="${GPU_ARCH:-}"
+
+    if ! is_native_rocm_apt_version "$version"; then
+        echo "rocm"
+        return 0
+    fi
+
+    if [[ -z "$arch" ]]; then
+        arch=$(detect_gpu_architecture || true)
+        GPU_ARCH="$arch"
+    fi
+
+    case "$arch" in
+        gfx1100|gfx1101|gfx1102|gfx1103)
+            echo "amdrocm7.13-gfx110x"
+            ;;
+        gfx1150)
+            echo "amdrocm7.13-gfx1150"
+            ;;
+        gfx1151)
+            echo "amdrocm7.13-gfx1151"
+            ;;
+        gfx1152|gfx1153)
+            echo "amdrocm7.13-gfx1152"
+            ;;
+        gfx1200|gfx1201)
+            echo "amdrocm7.13-gfx120x"
+            ;;
+        gfx1030)
+            echo "amdrocm7.13-gfx103x"
+            ;;
+        gfx950*)
+            echo "amdrocm7.13-gfx950"
+            ;;
+        gfx942*)
+            echo "amdrocm7.13-gfx94x"
+            ;;
+        gfx90a)
+            echo "amdrocm7.13-gfx90a"
+            ;;
+        gfx908)
+            echo "amdrocm7.13-gfx908"
+            ;;
+        *)
+            echo "amdrocm7.13"
+            ;;
+    esac
+}
+
 normalize_repo_version() {
     local version="$1"
 
@@ -557,6 +608,9 @@ get_amdgpu_repo_release() {
         7.13|7.13.0)
             echo "31.30"
             ;;
+        7.2.4)
+            echo "30.30.1"
+            ;;
         7.2.2)
             echo "30.30.1"
             ;;
@@ -659,6 +713,18 @@ apt_fix_broken_install() {
 
 dpkg_install_package() {
     dpkg --force-confdef --force-confold -i "$@"
+}
+
+install_rocm_kernel_prerequisites() {
+    if [[ "$PKG_MGR" != "apt" ]] || ! is_native_rocm_apt_version "$ROCM_VERSION"; then
+        return 0
+    fi
+
+    if [[ "$OS_ID:$OS_VERSION" == "ubuntu:24.04" ]] && detect_ryzen_apu_target; then
+        log "ROCm ${ROCM_VERSION} on Ubuntu 24.04 Ryzen APU requires OEM kernel 6.14"
+        apt_install linux-image-6.14.0-1018-oem || \
+            warn "Failed to install linux-image-6.14.0-1018-oem; install it manually before reboot"
+    fi
 }
 
 # Check if GPU architecture is a known Ryzen APU target.
@@ -1146,7 +1212,7 @@ fetch_available_versions() {
     # Fallback: hardcoded list
     if [[ ${#AVAILABLE_VERSIONS[@]} -eq 0 ]]; then
         warn "Cannot fetch versions from GitHub. Using cached list."
-        AVAILABLE_VERSIONS=("7.13.0" "7.2.3" "7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
+        AVAILABLE_VERSIONS=("7.13.0" "7.2.4" "7.2.3" "7.2.2" "7.2.1" "7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
         source_used="cached"
     fi
 
@@ -1549,7 +1615,7 @@ show_version_menu() {
             return
         elif [[ "$selection" == "custom"* ]]; then
             echo ""
-            read -r -p "Enter ROCm version (e.g., 7.13.0, 7.2.3): " ROCM_VERSION
+            read -r -p "Enter ROCm version (e.g., 7.13.0, 7.2.4): " ROCM_VERSION
             if [[ -z "$ROCM_VERSION" ]]; then
                 echo -e "${RED}No version entered${NC}"
                 show_version_menu
@@ -1592,7 +1658,7 @@ show_version_menu() {
                 $((${#options[@]}-2)))
                     # Enter custom version
                     echo ""
-                    read -r -p "Enter ROCm version (e.g., 7.13.0, 7.2.3): " custom_version
+                    read -r -p "Enter ROCm version (e.g., 7.13.0, 7.2.4): " custom_version
                     if [[ -n "$custom_version" ]]; then
                         ROCM_VERSION="$custom_version"
                         break
@@ -2447,6 +2513,8 @@ step_prerequisites() {
             # Install kernel headers
             $PKG_INSTALL "linux-headers-$(uname -r)" "linux-modules-extra-$(uname -r)" 2>/dev/null || \
                 $PKG_INSTALL "linux-headers-$(uname -r)" || true
+
+            install_rocm_kernel_prerequisites
             ;;
         dnf)
             # RHEL/Rocky/AlmaLinux equivalent packages
@@ -2680,10 +2748,15 @@ step_install_rocm() {
             fi
 
             echo -e "  Installing ROCm packages..."
-            if ! apt_has_package rocm; then
-                error "Unable to locate package 'rocm' after refreshing AMD repositories for ROCm ${ROCM_VERSION}"
+            local rocm_package="rocm"
+            if is_native_rocm_apt_version "$ROCM_VERSION"; then
+                rocm_package=$(get_native_rocm_apt_package "$ROCM_VERSION")
+                log "Using ROCm native apt package: ${rocm_package}"
             fi
-            apt_install rocm
+            if ! apt_has_package "$rocm_package"; then
+                error "Unable to locate package '${rocm_package}' after refreshing AMD repositories for ROCm ${ROCM_VERSION}"
+            fi
+            apt_install "$rocm_package"
             ;;
         dnf)
             if [[ "$NO_DKMS" == "true" ]]; then
@@ -3254,7 +3327,7 @@ ROCm Unified Installation Script v${SCRIPT_VERSION}
 Usage: sudo $0 [options]
 
 Options:
-  --version VERSION      Install specific ROCm version (e.g., 7.13.0, 7.2.3)
+  --version VERSION      Install specific ROCm version (e.g., 7.13.0, 7.2.4)
   --latest               Install latest available version
   --root-password PASS   Set root password during installation
   --skip-ssh             Skip SSH configuration
@@ -3479,7 +3552,7 @@ main() {
         sort_available_versions
     else
         warn "Cannot fetch versions from GitHub. Using cached list."
-        AVAILABLE_VERSIONS=("7.13.0" "7.2.3" "7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
+        AVAILABLE_VERSIONS=("7.13.0" "7.2.4" "7.2.3" "7.2.2" "7.2.1" "7.2" "7.1.1" "7.1" "7.0.3" "7.0.2" "7.0.1" "7.0" "6.4.3" "6.4.2" "6.4.1" "6.4")
         for v in "${AVAILABLE_VERSIONS[@]}"; do
             AMD_REPO_CACHE[$v]="stable"
         done
