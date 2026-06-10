@@ -40,6 +40,10 @@ assert_eq "gfx1103" "$(detect_gpu_arch_from_gfx_target_version 110003)" "gfx_tar
 assert_eq "gfx1150" "$(detect_gpu_arch_from_gfx_target_version 110500)" "gfx_target_version 110500 maps to gfx1150"
 assert_eq "gfx1151" "$(detect_gpu_arch_from_gfx_target_version 110501)" "gfx_target_version 110501 maps to gfx1151"
 assert_eq "gfx1152" "$(detect_gpu_arch_from_gfx_target_version 110502)" "gfx_target_version 110502 maps to gfx1152"
+assert_eq "gfx1150" "$(detect_gpu_arch_from_pci_device_id 0x150e)" "PCI device 0x150e maps to gfx1150"
+assert_eq "gfx1150" "$(detect_gpu_arch_from_pci_device_id 150e)" "PCI device 150e maps to gfx1150"
+assert_eq "gfx1150" "$(detect_gpu_arch_from_pci_device_id 5390)" "PCI device 5390 maps to gfx1150"
+assert_eq "gfx1150" "$(detect_gpu_arch_from_text '64:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:150e]')" "lspci PCI ID 150e maps to gfx1150"
 
 sysfs_fixture=$(mktemp -d)
 trap 'rm -rf "$sysfs_fixture"' EXIT
@@ -47,6 +51,8 @@ mkdir -p "${sysfs_fixture}/0" "${sysfs_fixture}/1"
 printf 'cpu_cores_count 16\ngfx_target_version 0\n' > "${sysfs_fixture}/0/properties"
 printf 'vendor_id 4098\ndevice_id 5568\ngfx_target_version 110500\n' > "${sysfs_fixture}/1/properties"
 assert_eq "gfx1150" "$(detect_gpu_arch_from_kfd_sysfs "$sysfs_fixture")" "KFD sysfs properties map to gfx1150 before ROCm install"
+printf 'vendor_id 4098\ndevice_id 5390\n' > "${sysfs_fixture}/1/properties"
+assert_eq "gfx1150" "$(detect_gpu_arch_from_kfd_sysfs "$sysfs_fixture")" "KFD sysfs device_id 5390 maps to gfx1150 when gfx_target_version is absent"
 
 GPU_ARCH=gfx1103
 assert_eq "amdrocm7.13-gfx110x" "$(get_native_rocm_apt_package 7.13.0)" "gfx1103 selects gfx110x package"

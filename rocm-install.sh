@@ -346,6 +346,16 @@ detect_gpu() {
 
 detect_gpu_arch_from_text() {
     local gpu_info="$1"
+    local pci_id detected_arch
+
+    while IFS= read -r pci_id; do
+        pci_id=${pci_id##*:}
+        pci_id=${pci_id%]}
+        if detected_arch=$(detect_gpu_arch_from_pci_device_id "$pci_id"); then
+            echo "$detected_arch"
+            return 0
+        fi
+    done < <(echo "$gpu_info" | grep -oiE '\[1002:[[:xdigit:]]+\]' || true)
 
     if echo "$gpu_info" | grep -qiE "gfx950|MI355|MI350"; then
         echo "gfx950-dcgpu"
@@ -376,21 +386,30 @@ detect_gpu_arch_from_text() {
     return 0
 }
 
-detect_gpu_arch_from_gfx_target_version() {
-    local gfx_target_version="$1"
+parse_number() {
+    local value="$1"
 
-    case "$gfx_target_version" in
-        110003)
-            echo "gfx1103"
-            ;;
-        110500)
+    value=${value,,}
+    value=${value#0x}
+
+    if [[ "$value" =~ [a-f] ]]; then
+        printf '%d\n' "0x${value}"
+    elif [[ "$value" =~ ^[0-9]+$ ]]; then
+        printf '%d\n' "$value"
+    else
+        return 1
+    fi
+}
+
+detect_gpu_arch_from_pci_device_id() {
+    local device_id="$1"
+    local parsed_id
+
+    parsed_id=$(parse_number "$device_id") || return 1
+
+    case "$parsed_id" in
+        5390) # 0x150e, Radeon 890M / gfx1150
             echo "gfx1150"
-            ;;
-        110501)
-            echo "gfx1151"
-            ;;
-        110502)
-            echo "gfx1152"
             ;;
         *)
             return 1
@@ -398,18 +417,40 @@ detect_gpu_arch_from_gfx_target_version() {
     esac
 }
 
+detect_gpu_arch_from_gfx_target_version() {
+    local gfx_target_version="$1"
+    local parsed_version major minor stepping
+
+    parsed_version=$(parse_number "$gfx_target_version") || return 1
+    major=$(( (parsed_version / 10000) % 100 ))
+    minor=$(( (parsed_version / 100) % 100 ))
+    stepping=$(( parsed_version % 100 ))
+
+    if [[ $major -lt 9 || $minor -gt 15 || $stepping -gt 15 ]]; then
+        return 1
+    fi
+
+    printf 'gfx%d%x%x\n' "$major" "$minor" "$stepping"
+}
+
 detect_gpu_arch_from_kfd_sysfs() {
     local nodes_root="${1:-/sys/class/kfd/kfd/topology/nodes}"
-    local properties_file gfx_target_version detected_arch
+    local properties_file gfx_target_version device_id detected_arch
 
     shopt -s nullglob
     for properties_file in "${nodes_root}"/*/properties; do
         [[ -r "$properties_file" ]] || continue
 
         gfx_target_version=$(awk '$1 == "gfx_target_version" { print $2; exit }' "$properties_file" 2>/dev/null || true)
-        [[ -n "$gfx_target_version" ]] || continue
+        if [[ -n "$gfx_target_version" ]] && detected_arch=$(detect_gpu_arch_from_gfx_target_version "$gfx_target_version"); then
+            echo "$detected_arch"
+            return 0
+        fi
 
-        if detected_arch=$(detect_gpu_arch_from_gfx_target_version "$gfx_target_version"); then
+        device_id=$(awk '$1 == "device_id" { print $2; exit }' "$properties_file" 2>/dev/null || true)
+        [[ -n "$device_id" ]] || continue
+
+        if detected_arch=$(detect_gpu_arch_from_pci_device_id "$device_id"); then
             echo "$detected_arch"
             return 0
         fi
