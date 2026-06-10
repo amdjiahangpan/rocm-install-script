@@ -36,6 +36,17 @@ assert_eq "gfx1103" "$(detect_gpu_arch_from_text 'Advanced Micro Devices, Inc. [
 assert_eq "gfx1150" "$(detect_gpu_arch_from_text 'Advanced Micro Devices, Inc. [AMD/ATI] Strix [Radeon 890M Graphics]')" "Radeon 890M maps to gfx1150"
 assert_eq "gfx1151" "$(detect_gpu_arch_from_text 'Advanced Micro Devices, Inc. [AMD/ATI] Strix Halo [Radeon 8060S Graphics]')" "Radeon 8060S maps to gfx1151"
 assert_eq "gfx1152" "$(detect_gpu_arch_from_text 'Advanced Micro Devices, Inc. [AMD/ATI] Krackan [Radeon 860M Graphics]')" "Radeon 860M maps to gfx1152"
+assert_eq "gfx1103" "$(detect_gpu_arch_from_gfx_target_version 110003)" "gfx_target_version 110003 maps to gfx1103"
+assert_eq "gfx1150" "$(detect_gpu_arch_from_gfx_target_version 110500)" "gfx_target_version 110500 maps to gfx1150"
+assert_eq "gfx1151" "$(detect_gpu_arch_from_gfx_target_version 110501)" "gfx_target_version 110501 maps to gfx1151"
+assert_eq "gfx1152" "$(detect_gpu_arch_from_gfx_target_version 110502)" "gfx_target_version 110502 maps to gfx1152"
+
+sysfs_fixture=$(mktemp -d)
+trap 'rm -rf "$sysfs_fixture"' EXIT
+mkdir -p "${sysfs_fixture}/0" "${sysfs_fixture}/1"
+printf 'cpu_cores_count 16\ngfx_target_version 0\n' > "${sysfs_fixture}/0/properties"
+printf 'vendor_id 4098\ndevice_id 5568\ngfx_target_version 110500\n' > "${sysfs_fixture}/1/properties"
+assert_eq "gfx1150" "$(detect_gpu_arch_from_kfd_sysfs "$sysfs_fixture")" "KFD sysfs properties map to gfx1150 before ROCm install"
 
 GPU_ARCH=gfx1103
 assert_eq "amdrocm7.13-gfx110x" "$(get_native_rocm_apt_package 7.13.0)" "gfx1103 selects gfx110x package"
@@ -47,5 +58,12 @@ GPU_ARCH=gfx1151
 assert_eq "amdrocm7.13-gfx1151" "$(get_native_rocm_apt_package 7.13.0)" "gfx1151 selects gfx1151 package"
 
 assert_fails "unknown ROCm 7.13 architecture must not select all-arch package" bash -c "export ROCM_INSTALL_LIBRARY_MODE=1; source '${ROOT_DIR}/rocm-install.sh'; GPU_ARCH=; detect_gpu_architecture() { :; }; get_native_rocm_apt_package 7.13.0"
+
+visible_error_output=$(bash -c "export ROCM_INSTALL_LIBRARY_MODE=1; source '${ROOT_DIR}/rocm-install.sh'; GPU_ARCH=; detect_gpu_architecture() { :; }; if ! rocm_package=\$(get_native_rocm_apt_package 7.13.0); then error \"Unable to determine a ROCm 7.13 GPU-specific package for architecture '\${GPU_ARCH:-unknown}'. Specify --gpu-arch.\"; fi" 2>&1 || true)
+if [[ "$visible_error_output" != *"[ERROR]"* ]] || [[ "$visible_error_output" != *"Specify --gpu-arch"* ]]; then
+    printf 'FAIL: unknown architecture error was not visible\noutput: %s\n' "$visible_error_output" >&2
+    exit 1
+fi
+pass_count=$((pass_count + 1))
 
 printf 'PASS: %d package selection checks\n' "$pass_count"

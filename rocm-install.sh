@@ -376,12 +376,56 @@ detect_gpu_arch_from_text() {
     return 0
 }
 
+detect_gpu_arch_from_gfx_target_version() {
+    local gfx_target_version="$1"
+
+    case "$gfx_target_version" in
+        110003)
+            echo "gfx1103"
+            ;;
+        110500)
+            echo "gfx1150"
+            ;;
+        110501)
+            echo "gfx1151"
+            ;;
+        110502)
+            echo "gfx1152"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+detect_gpu_arch_from_kfd_sysfs() {
+    local nodes_root="${1:-/sys/class/kfd/kfd/topology/nodes}"
+    local properties_file gfx_target_version detected_arch
+
+    shopt -s nullglob
+    for properties_file in "${nodes_root}"/*/properties; do
+        [[ -r "$properties_file" ]] || continue
+
+        gfx_target_version=$(awk '$1 == "gfx_target_version" { print $2; exit }' "$properties_file" 2>/dev/null || true)
+        [[ -n "$gfx_target_version" ]] || continue
+
+        if detected_arch=$(detect_gpu_arch_from_gfx_target_version "$gfx_target_version"); then
+            echo "$detected_arch"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # Detect GPU architecture for TheRock and ROCm 7.13 package selection.
 detect_gpu_architecture() {
     local detected_arch=""
 
+    detected_arch=$(detect_gpu_arch_from_kfd_sysfs "/sys/class/kfd/kfd/topology/nodes" || true)
+
     # Try lspci first
-    if command -v lspci &> /dev/null; then
+    if [[ -z "$detected_arch" ]] && command -v lspci &> /dev/null; then
         local gpu_info
         gpu_info=$(lspci -nn | grep -iE "VGA|Display|3D" | grep -i amd || true)
 
@@ -483,7 +527,7 @@ get_native_rocm_apt_package() {
             echo "amdrocm7.13-gfx908"
             ;;
         *)
-            error "Unable to determine a ROCm 7.13 GPU-specific package for architecture '${arch:-unknown}'. Specify --gpu-arch (for example gfx1103, gfx1150, gfx1151, or gfx1152) instead of installing the all-architecture amdrocm7.13 package."
+            return 1
             ;;
     esac
 }
@@ -2747,7 +2791,9 @@ step_install_rocm() {
             echo -e "  Installing ROCm packages..."
             local rocm_package="rocm"
             if is_native_rocm_apt_version "$ROCM_VERSION"; then
-                rocm_package=$(get_native_rocm_apt_package "$ROCM_VERSION")
+                if ! rocm_package=$(get_native_rocm_apt_package "$ROCM_VERSION"); then
+                    error "Unable to determine a ROCm 7.13 GPU-specific package for architecture '${GPU_ARCH:-unknown}'. Specify --gpu-arch (for example gfx1103, gfx1150, gfx1151, or gfx1152) instead of installing the all-architecture amdrocm7.13 package."
+                fi
                 log "Using ROCm native apt package: ${rocm_package}"
             fi
             if ! apt_has_package "$rocm_package"; then
