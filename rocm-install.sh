@@ -344,7 +344,39 @@ detect_gpu() {
 # TheRock (GPU Architecture Detection)
 #######################################
 
-# Detect GPU architecture for TheRock installation
+detect_gpu_arch_from_text() {
+    local gpu_info="$1"
+
+    if echo "$gpu_info" | grep -qiE "gfx950|MI355|MI350"; then
+        echo "gfx950-dcgpu"
+    elif echo "$gpu_info" | grep -qiE "gfx94[0-9]|MI325|MI300"; then
+        echo "gfx94X-dcgpu"
+    elif echo "$gpu_info" | grep -qiE "gfx1201|R9700|RX 9070"; then
+        echo "gfx1201"
+    elif echo "$gpu_info" | grep -qiE "gfx1200|RX 9060"; then
+        echo "gfx1200"
+    elif echo "$gpu_info" | grep -qiE "gfx1103|Radeon (780M|760M|740M)"; then
+        echo "gfx1103"
+    elif echo "$gpu_info" | grep -qiE "gfx1100|W7900|W7800|RX 7900"; then
+        echo "gfx1100"
+    elif echo "$gpu_info" | grep -qiE "gfx1101|W7700|RX 7800|RX 7700|V710"; then
+        echo "gfx1101"
+    elif echo "$gpu_info" | grep -qiE "gfx1102|RX 7600"; then
+        echo "gfx1102"
+    elif echo "$gpu_info" | grep -qiE "gfx1030|W6800|V620"; then
+        echo "gfx1030"
+    elif echo "$gpu_info" | grep -qiE "gfx1150|Radeon (890M|880M)"; then
+        echo "gfx1150"
+    elif echo "$gpu_info" | grep -qiE "gfx1151|Radeon (8060S|8050S|8040S)"; then
+        echo "gfx1151"
+    elif echo "$gpu_info" | grep -qiE "gfx115[23]|Radeon (860M|840M|820M)"; then
+        echo "gfx1152"
+    fi
+
+    return 0
+}
+
+# Detect GPU architecture for TheRock and ROCm 7.13 package selection.
 detect_gpu_architecture() {
     local detected_arch=""
 
@@ -353,28 +385,7 @@ detect_gpu_architecture() {
         local gpu_info
         gpu_info=$(lspci -nn | grep -iE "VGA|Display|3D" | grep -i amd || true)
 
-        # MI355X, MI350X, MI350P -> gfx950-dcgpu
-        if echo "$gpu_info" | grep -qiE "MI355|MI350|gfx950"; then
-            detected_arch="gfx950-dcgpu"
-        # MI325X, MI300X, MI300A -> gfx94X-dcgpu
-        elif echo "$gpu_info" | grep -qiE "MI325|MI300|gfx94"; then
-            detected_arch="gfx94X-dcgpu"
-        elif echo "$gpu_info" | grep -qiE "R9700|RX 9070|gfx1201"; then
-            detected_arch="gfx1201"
-        elif echo "$gpu_info" | grep -qiE "RX 9060|gfx1200"; then
-            detected_arch="gfx1200"
-        elif echo "$gpu_info" | grep -qiE "W7900|W7800|RX 7900|gfx1100"; then
-            detected_arch="gfx1100"
-        elif echo "$gpu_info" | grep -qiE "W7700|RX 7800|RX 7700|V710|gfx1101"; then
-            detected_arch="gfx1101"
-        elif echo "$gpu_info" | grep -qiE "RX 7600|gfx1102"; then
-            detected_arch="gfx1102"
-        elif echo "$gpu_info" | grep -qiE "W6800|V620|gfx1030"; then
-            detected_arch="gfx1030"
-        # Ryzen AI APUs
-        elif echo "$gpu_info" | grep -qiE "gfx115[0-3]|gfx1103|Strix|Hawk|Krackan|Kraken"; then
-            detected_arch="gfx1151"
-        fi
+        detected_arch=$(detect_gpu_arch_from_text "$gpu_info")
     fi
 
     # Try rocminfo if available and no detection yet
@@ -382,21 +393,7 @@ detect_gpu_architecture() {
         local rocm_info
         rocm_info=$(rocminfo 2>/dev/null || true)
 
-        if echo "$rocm_info" | grep -qE "gfx950"; then
-            detected_arch="gfx950-dcgpu"
-        elif echo "$rocm_info" | grep -qE "gfx94[0-9]"; then
-            detected_arch="gfx94X-dcgpu"
-        elif echo "$rocm_info" | grep -qE "gfx1201"; then
-            detected_arch="gfx1201"
-        elif echo "$rocm_info" | grep -qE "gfx1200"; then
-            detected_arch="gfx1200"
-        elif echo "$rocm_info" | grep -qE "gfx110[0-3]"; then
-            detected_arch=$(echo "$rocm_info" | grep -oE "gfx110[0-3]" | head -1)
-        elif echo "$rocm_info" | grep -qE "gfx1030"; then
-            detected_arch="gfx1030"
-        elif echo "$rocm_info" | grep -qE "gfx115[0-3]"; then
-            detected_arch=$(echo "$rocm_info" | grep -oE "gfx115[0-3]" | head -1)
-        fi
+        detected_arch=$(detect_gpu_arch_from_text "$rocm_info")
     fi
 
     echo "$detected_arch"
@@ -486,7 +483,7 @@ get_native_rocm_apt_package() {
             echo "amdrocm7.13-gfx908"
             ;;
         *)
-            echo "amdrocm7.13"
+            error "Unable to determine a ROCm 7.13 GPU-specific package for architecture '${arch:-unknown}'. Specify --gpu-arch (for example gfx1103, gfx1150, gfx1151, or gfx1152) instead of installing the all-architecture amdrocm7.13 package."
             ;;
     esac
 }
@@ -3342,7 +3339,7 @@ Options:
   --help                 Show this help
 
 TheRock Options (for pre-release versions like 7.9.0+):
-  --gpu-arch ARCH        GPU architecture (for example gfx950-dcgpu, gfx94X-dcgpu, gfx1151)
+  --gpu-arch ARCH        GPU architecture for ROCm 7.13/TheRock package selection
   --therock-method MTD   Installation method: pip (default) or tarball
   --therock              Force TheRock installation mode
 
@@ -3376,6 +3373,9 @@ Examples:
 
   # Ryzen APU systems should use inbox drivers
   sudo $0 --latest --driver-mode inbox
+
+  # Force ROCm 7.13 native apt package selection when auto-detection is ambiguous
+  sudo $0 --version 7.13.0 --gpu-arch gfx1150 --driver-mode inbox
 
   # TheRock pre-release installation
   sudo $0 --version 7.9.0 --gpu-arch gfx94X-dcgpu --non-interactive --skip-reboot
@@ -3694,4 +3694,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${ROCM_INSTALL_LIBRARY_MODE:-}" != "1" ]]; then
+    main "$@"
+fi
