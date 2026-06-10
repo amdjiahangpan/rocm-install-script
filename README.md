@@ -208,6 +208,16 @@ Cleanup policy behavior:
 For standard non-APU installs, resolved driver mode stays `dkms`, so cleanup does
 not run unless inbox mode is selected.
 
+For ROCm 7.13 native apt installs, the script refuses to use AMD's generic
+`amdrocm7.13` package when the GPU architecture cannot be determined, because
+that package pulls every supported gfx architecture. If auto-detection is
+ambiguous, specify the target explicitly, for example:
+
+```bash
+sudo ./rocm-install.sh --version 7.13.0 --gpu-arch gfx1150 --driver-mode inbox
+sudo ./rocm-install.sh --version 7.13.0 --gpu-arch gfx1103 --driver-mode inbox
+```
+
 ## Legacy Branches
 
 For specific older configurations, legacy branches are still available:
