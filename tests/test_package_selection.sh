@@ -45,6 +45,37 @@ assert_eq "gfx1150" "$(detect_gpu_arch_from_pci_device_id 150e)" "PCI device 150
 assert_eq "gfx1150" "$(detect_gpu_arch_from_pci_device_id 5390)" "PCI device 5390 maps to gfx1150"
 assert_eq "gfx1150" "$(detect_gpu_arch_from_text '64:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:150e]')" "lspci PCI ID 150e maps to gfx1150"
 
+apt_has_package() {
+    [[ "$1" == "linux-oem-24.04c" ]]
+}
+assert_eq "linux-oem-24.04c" "$(resolve_oem_kernel_package linux-oem-24.04c 6.14)" "OEM kernel resolver prefers Ubuntu 24.04c meta-package"
+
+apt_has_package() {
+    [[ "$1" == "linux-oem-6.14" ]]
+}
+assert_eq "linux-oem-6.14" "$(resolve_oem_kernel_package linux-oem-24.04c 6.14)" "OEM kernel resolver falls back to series meta-package"
+
+apt_cache_fixture=$(mktemp -d)
+mkdir -p "${apt_cache_fixture}/bin"
+cat > "${apt_cache_fixture}/bin/apt-cache" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "search" ]]; then
+    printf 'linux-image-6.14.0-1018-oem - Linux kernel image\n'
+    printf 'linux-image-6.14.0-1021-oem - Linux kernel image\n'
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "${apt_cache_fixture}/bin/apt-cache"
+old_path="$PATH"
+PATH="${apt_cache_fixture}/bin:${PATH}"
+apt_has_package() {
+    return 1
+}
+assert_eq "linux-image-6.14.0-1021-oem" "$(resolve_oem_kernel_package linux-oem-24.04c 6.14)" "OEM kernel resolver falls back to newest matching image package"
+PATH="$old_path"
+rm -rf "$apt_cache_fixture"
+
 sysfs_fixture=$(mktemp -d)
 trap 'rm -rf "$sysfs_fixture"' EXIT
 mkdir -p "${sysfs_fixture}/0" "${sysfs_fixture}/1"

@@ -735,6 +735,32 @@ apt_has_package() {
     apt-cache show "$package_name" >/dev/null 2>&1
 }
 
+resolve_oem_kernel_package() {
+    local preferred_meta_package="$1"
+    local kernel_series="$2"
+    local series_meta_package="linux-oem-${kernel_series}"
+    local escaped_series candidate
+
+    if apt_has_package "$preferred_meta_package"; then
+        printf '%s\n' "$preferred_meta_package"
+        return 0
+    fi
+
+    if apt_has_package "$series_meta_package"; then
+        printf '%s\n' "$series_meta_package"
+        return 0
+    fi
+
+    escaped_series=${kernel_series//./\\.}
+    candidate=$(apt-cache search --names-only "^linux-image-${escaped_series}\\.[0-9]+-[0-9]+-oem$" 2>/dev/null | awk '{print $1}' | sort -V | tail -n 1)
+    if [[ -n "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
+}
+
 should_lock_kernel() {
     local version="$1"
 
@@ -798,14 +824,20 @@ dpkg_install_package() {
 }
 
 install_rocm_kernel_prerequisites() {
+    local oem_kernel_package
+
     if [[ "$PKG_MGR" != "apt" ]] || ! is_native_rocm_apt_version "$ROCM_VERSION"; then
         return 0
     fi
 
     if [[ "$OS_ID:$OS_VERSION" == "ubuntu:24.04" ]] && detect_ryzen_apu_target; then
         log "ROCm ${ROCM_VERSION} on Ubuntu 24.04 Ryzen APU requires OEM kernel 6.14"
-        apt_install linux-image-6.14.0-1018-oem || \
-            warn "Failed to install linux-image-6.14.0-1018-oem; install it manually before reboot"
+        if oem_kernel_package=$(resolve_oem_kernel_package linux-oem-24.04c 6.14); then
+            apt_install "$oem_kernel_package" || \
+                warn "Failed to install ${oem_kernel_package}; install linux-oem-24.04c manually before reboot"
+        else
+            warn "Unable to find linux-oem-24.04c or a matching linux-image-6.14.*-oem package; install Ubuntu OEM kernel 6.14 manually before reboot"
+        fi
     fi
 }
 
