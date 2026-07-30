@@ -14,6 +14,26 @@ parse_fails() {
     parse_args "$@"
 }
 
+run_invalid_option() {
+    local launcher=$1 stderr_file=${TEST_TEMP_ROOT}/entrypoint-stderr
+    local stdout_file=${TEST_TEMP_ROOT}/entrypoint-stdout status
+    local -a command
+
+    case "$launcher" in
+        bash) command=(bash "${ROOT_DIR}/rocm-install.sh" --not-a-valid-option) ;;
+        direct) command=("${ROOT_DIR}/rocm-install.sh" --not-a-valid-option) ;;
+        *) return 64 ;;
+    esac
+    if env -u ROCM_INSTALL_LIBRARY_MODE "${command[@]}" >"$stdout_file" 2>"$stderr_file"; then
+        status=0
+    else
+        status=$?
+    fi
+    ENTRYPOINT_STDOUT=$(<"$stdout_file")
+    ENTRYPOINT_STDERR=$(<"$stderr_file")
+    return "$status"
+}
+
 assert_eq "7.14.0" "$ROCM_VERSION" "release is fixed at ROCm 7.14.0"
 assert_eq "7.14" "$ROCM_SERIES" "package series is fixed at 7.14"
 assert_eq "31.40" "$AMDGPU_RELEASE" "AMDGPU migration release is fixed at 31.40"
@@ -83,6 +103,15 @@ assert_fails "unknown options are rejected" parse_fails --distribution ubuntu
 assert_fails "verify and uninstall modes are exclusive" parse_fails --verify-only --uninstall
 assert_fails "root passwords containing a newline are rejected" parse_fails --root-password $'unsafe\npassword'
 assert_fails "root passwords containing a carriage return are rejected" parse_fails --root-password $'unsafe\rpassword'
+
+assert_status 1 "bash launcher preserves an invalid-option failure" run_invalid_option bash
+assert_eq "" "$ENTRYPOINT_STDOUT" "bash launcher keeps invalid-option diagnostics off stdout"
+assert_contains "$ENTRYPOINT_STDERR" "argument parsing" "bash launcher identifies argument parsing failures on stderr"
+assert_contains "$ENTRYPOINT_STDERR" "--help" "bash launcher tells users how to correct invalid options on stderr"
+assert_status 1 "direct launcher preserves an invalid-option failure" run_invalid_option direct
+assert_eq "" "$ENTRYPOINT_STDOUT" "direct launcher keeps invalid-option diagnostics off stdout"
+assert_contains "$ENTRYPOINT_STDERR" "argument parsing" "direct launcher identifies argument parsing failures on stderr"
+assert_contains "$ENTRYPOINT_STDERR" "--help" "direct launcher tells users how to correct invalid options on stderr"
 
 help_output=$(show_help)
 assert_contains "$help_output" "ROCm 7.14.0" "help names the fixed release"

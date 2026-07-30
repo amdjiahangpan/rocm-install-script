@@ -1237,27 +1237,61 @@ parse_args() {
     [[ "$VERIFY_ONLY" != true || "$UNINSTALL" != true ]]
 }
 
+preflight_error() {
+    printf 'ROCm preflight failed during %s: %s\n' "$1" "$2" >&2
+}
+
 main() {
+    local status
+
     reset_defaults
-    parse_args "$@" || return $?
+    parse_args "$@" || {
+        status=$?
+        preflight_error 'argument parsing' "check the options and run '$0 --help'."
+        return "$status"
+    }
     if [[ "$SHOW_HELP" == true ]]; then
         show_help
         return 0
     fi
-    require_root || return $?
-    detect_system || return $?
+    require_root || {
+        status=$?
+        preflight_error 'root privilege check' 're-run with sudo or as root.'
+        return "$status"
+    }
+    detect_system || {
+        status=$?
+        preflight_error 'system detection' "supported Ubuntu/x86_64 is required; detected os=${OS_ID:-unknown}-${OS_VERSION:-unknown} arch=${ARCH:-unknown} kernel=${KERNEL_VERSION:-unknown}."
+        return "$status"
+    }
     if [[ "$UNINSTALL" == true ]]; then
         do_uninstall
         return $?
     fi
-    resolve_gpu_identity || return $?
+    resolve_gpu_identity || {
+        status=$?
+        preflight_error 'GPU/KFD discovery' 'check the KFD topology or provide a supported --gpu-arch value.'
+        return "$status"
+    }
     if [[ "$VERIFY_ONLY" == true ]]; then
         verify_installation
         return $?
     fi
-    resolve_install_plan || return $?
-    print_install_plan || return $?
-    confirm_install_plan || return $?
+    resolve_install_plan || {
+        status=$?
+        preflight_error 'installation plan validation' "check supported OS/kernel/driver/gfx values: os=${OS_ID:-unknown}-${OS_VERSION:-unknown} kernel=${KERNEL_VERSION:-unknown} driver=${DRIVER_MODE:-unknown} gfx=${GPU_ARCHES//$'\n'/,}."
+        return "$status"
+    }
+    print_install_plan || {
+        status=$?
+        preflight_error 'installation plan rendering' 'the validated plan could not be written or rendered; check stdout and the output destination.'
+        return "$status"
+    }
+    confirm_install_plan || {
+        status=$?
+        preflight_error 'installation confirmation' 'installation was cancelled; re-run with --non-interactive if appropriate.'
+        return "$status"
+    }
     step_install_driver || return $?
     step_prerequisites || return $?
     step_install_rocm || return $?
