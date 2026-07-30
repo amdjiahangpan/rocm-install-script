@@ -5,9 +5,10 @@ The release is fixed at 7.14.0, not 7.1.4. It doesn't select or discover other
 ROCm releases.
 
 The supported host is Ubuntu 24.04 or 26.04 on `x86_64`. Package selection is
-based only on one unique KFD `gfx_target_version`, or an explicit `--gpu-arch`.
-The DRM product name is informational only. OS, kernel, driver, and artifact
-checks must all pass before the script changes the system.
+based only on one or more supported normalized KFD `gfx_target_version` values,
+or the complete set supplied through repeatable `--gpu-arch` options. DRM
+product names are informational only. OS, kernel, driver, and artifact checks
+must all pass before the script changes the system.
 
 > [!WARNING]
 > SSH setup is enabled by default. It installs and starts OpenSSH, enables
@@ -39,10 +40,10 @@ cd rocm-install-script
 sudo bash ./rocm-install.sh
 ```
 
-The default run uses APT and installs the architecture-specific full Core SDK.
-It prints the resolved plan and asks for confirmation before installing. If a
-driver, group, or udev change requires a reboot, the default reboot policy is
-immediate.
+The default run uses APT and installs one architecture-specific full Core SDK
+for each detected target. It prints the resolved plan and asks for confirmation
+before installing. If a driver, group, or udev change requires a reboot, the
+default reboot policy is immediate.
 
 After confirmation, the installer migrates the driver before running any
 prerequisite APT update or install. It removes a conflicting legacy DKMS driver
@@ -70,16 +71,28 @@ gfx1151 gfx1150 gfx1152 gfx1153 gfx1103
 
 Automatic pre-install detection scans KFD topology nodes with
 `cpu_cores_count == 0` and a nonzero `gfx_target_version`. The decimal target is
-decoded into its conventional `gfx` name and deduplicated. Exactly one unique
-architecture succeeds. Zero or multiple unique architectures require an explicit
-`--gpu-arch`; the override must be one of the supported artifact architectures.
+decoded into its conventional `gfx` name. The installer validates every GPU
+node, removes duplicates, and sorts the complete set. Zero detected targets or
+any unsupported target fails before system mutation. One or more supported
+targets, including multiple unique architectures, are accepted automatically.
 
-For display only, the installer reads `/sys/class/drm/card*/device/product_name`.
-If it is empty, it performs an exact device/revision lookup in the installed
+`--gpu-arch` may be repeated. If present, its complete set replaces automatic
+KFD discovery rather than extending it. The installer validates, deduplicates,
+and sorts the explicit values. An override may intentionally request supported
+artifact coverage for hardware that is currently absent, which supports
+recovery and pre-provisioning. Any unsupported member rejects the complete set.
+Unless a required reboot defers verification, every explicitly requested target
+must then appear as a `rocminfo` agent.
+
+For display only, the installer reads all available
+`/sys/class/drm/card*/device/product_name` values. For a card with an empty
+value, it performs an exact device/revision lookup in the installed
 `/usr/share/libdrm/amdgpu.ids` file and prefixes the resulting marketing name
-with `AMD `. This informational name never selects a package, SKU, driver, or
-kernel. Pre-install detection does not use `rocminfo`, `/proc/cpuinfo`, or
-`lspci`; `rocminfo` remains a post-install verification requirement.
+with `AMD `. The unique nonempty product names are sorted independently and are
+not correlated with individual `gfx` targets. They never select a package, SKU,
+driver, or kernel. Pre-install detection does not use `rocminfo`,
+`/proc/cpuinfo`, or `lspci`; `rocminfo` remains a post-install verification
+requirement.
 
 ## Kernel and Driver Requirements
 
@@ -127,14 +140,17 @@ For unattended migration from an older driver, pass
 ### APT, Default
 
 APT configures AMD's `packages-multi-arch` repository for `ubuntu2404` or
-`ubuntu2604`, then installs the full architecture-specific Core SDK package:
+`ubuntu2604`, then resolves one full architecture-specific Core SDK package per
+requested `gfx` target:
 
 ```text
 amdrocm-core-sdk7.14-<gfx>
 ```
 
-For example, `gfx1151` installs `amdrocm-core-sdk7.14-gfx1151`. There is no
-generic all-architecture fallback.
+For example, `gfx1151` installs `amdrocm-core-sdk7.14-gfx1151`. A
+`gfx1151,gfx1201` plan installs `amdrocm-core-sdk7.14-gfx1151` and
+`amdrocm-core-sdk7.14-gfx1201` together in one `apt-get install` transaction.
+There is no generic all-architecture fallback.
 
 Before that installation, APT checks the installed package database and removes
 only exact installed legacy names matching `^rocm($|-)`, such as `rocm` and
@@ -145,11 +161,18 @@ instead of relying on a stale `/opt/rocm` link.
 
 ### Pip
 
-`--method pip` creates `/opt/rocm-7.14.0-venv` and installs the pinned
-architecture extra from AMD's multi-architecture wheel index:
+`--method pip` creates `/opt/rocm-7.14.0-venv` and installs one pinned
+requirement from AMD's multi-architecture wheel index. The requirement contains
+one `device-<gfx>` extra for every requested target:
 
 ```text
 rocm[libraries,device-<gfx>]==7.14.0
+```
+
+For `gfx1151` plus `gfx1201`, the exact requirement is:
+
+```text
+rocm[libraries,device-gfx1151,device-gfx1201]==7.14.0
 ```
 
 The system profile exposes the virtual environment's `bin` directory but
@@ -157,10 +180,21 @@ doesn't activate the environment automatically.
 
 ### Tarball
 
-`--method tarball` downloads the reviewed artifact for the selected
-architecture. It extracts into a temporary staging directory, promotes the
-result to `/opt/rocm-7.14.0`, then updates `/opt/rocm`. A failed extraction or
-activation leaves the previous installation in place when rollback succeeds.
+For one requested target, `--method tarball` selects the reviewed artifact
+mapped to that target, which may be architecture-specific or family-specific.
+For example, `gfx1151` selects
+`therock-dist-linux-gfx1151-7.14.0.tar.gz`. Multiple requested targets select
+the single reviewed full artifact:
+
+```text
+therock-dist-linux-multiarch-7.14.0.tar.gz
+```
+
+The installer never overlays architecture-specific or family-specific
+tarballs. Every target must still be in the supported list before either form
+is selected. The archive extracts into a temporary staging directory, promotes
+the result to `/opt/rocm-7.14.0`, then updates `/opt/rocm`. A failed extraction
+or activation leaves the previous installation in place when rollback succeeds.
 
 All three methods use the same GPU, OS, kernel, and driver validation.
 
@@ -169,7 +203,7 @@ All three methods use the same GPU, OS, kernel, and driver validation.
 | Option | Meaning |
 | --- | --- |
 | `--method METHOD` | Installation method: `apt`, `pip`, or `tarball`. Default: `apt`. |
-| `--gpu-arch ARCH` | Supported architecture override when KFD has zero or multiple unique targets. |
+| `--gpu-arch ARCH` | Replace automatic KFD detection with a supported architecture. May be repeated to form the complete override set; duplicate values are removed. |
 | `--driver-mode MODE` | `auto` (default), `inbox`, or `dkms`. |
 | `--skip-ssh` | Skip OpenSSH setup and any root password update. |
 | `--root-password PASS` | Set the root password during SSH setup. |
@@ -192,11 +226,36 @@ Install with automatic GPU detection and the default APT method:
 sudo bash ./rocm-install.sh
 ```
 
-Override KFD detection when the host has no unique target:
+Install for one explicit target instead of using KFD detection:
 
 ```bash
 sudo bash ./rocm-install.sh --gpu-arch gfx1151
 ```
+
+Pre-provision a Ryzen AI Max+ 395 system with its `gfx1151` integrated GPU and
+a Radeon AI PRO R9700 `gfx1201` discrete GPU by supplying both targets:
+
+```bash
+sudo bash ./rocm-install.sh \
+  --gpu-arch gfx1151 \
+  --gpu-arch gfx1201
+```
+
+On Ubuntu 26.04, the default APT plan includes this excerpt:
+
+```text
+INSTALL PLAN
+gfx=gfx1151,gfx1201
+os=ubuntu-26.04
+method=apt
+artifact=amdrocm-core-sdk7.14-gfx1151,amdrocm-core-sdk7.14-gfx1201
+driver_mode=inbox
+```
+
+The public plan labels are `gfx`, `os`, `method`, `artifact`, `driver_mode`, and
+the optional informational `product_name`. Collection values are rendered as
+sorted comma-separated fields. A record that contains a comma is quoted in the
+CSV field.
 
 Install the pip package set without changing SSH or rebooting automatically:
 
@@ -273,9 +332,13 @@ sudo bash ./rocm-install.sh --method pip --verify-only
 ```
 
 Post-install verification requires both `rocminfo` and `amd-smi version`. The
-latter must report ROCm 7.14.0. The `--method` value chooses the verification
-root, so the check invokes the selected method's absolute binaries rather than
-depending on a future profile update: APT uses
+installer requires a `rocminfo` agent for every requested `gfx` target. Extra
+visible `gfx` agents are allowed, but a missing requested target fails
+verification. `amd-smi version` must still report exactly ROCm 7.14.0. When the
+current run requires a reboot, verification remains deferred as described
+above. The `--method` value chooses the verification root, so the check invokes
+the selected method's absolute binaries rather than depending on a future
+profile update: APT uses
 `/opt/rocm/core-7.14/bin`, tarball uses `/opt/rocm/bin`, and pip uses
 `/opt/rocm-7.14.0-venv/bin`.
 
@@ -306,7 +369,10 @@ If pre-install GPU detection fails, inspect KFD topology:
 cat /sys/class/kfd/kfd/topology/nodes/*/properties
 ```
 
-Use `--gpu-arch` only when KFD cannot provide exactly one unique target.
+Use one or more `--gpu-arch` options when you need to replace automatic
+discovery, such as recovery or pre-provisioning for supported hardware that is
+not currently visible. Without an override, every automatically detected target
+must be supported.
 
 If the driver isn't active after reboot, check:
 
