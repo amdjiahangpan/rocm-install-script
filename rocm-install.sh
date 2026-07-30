@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034
+# shellcheck disable=SC2034,SC2120,SC2119
 
 if [[ "${ROCM_INSTALL_LIBRARY_MODE:-}" != 1 ]]; then
     set -euo pipefail
@@ -13,6 +13,7 @@ ROCM_PACKAGES_ROOT=https://repo.amd.com/rocm/packages-multi-arch
 ROCM_GPG_KEY_URL=${ROCM_PACKAGES_ROOT}/gpg/rocm.gpg
 ROCM_WHL_INDEX=https://repo.amd.com/rocm/whl-multi-arch/
 ROCM_TARBALL_ROOT=https://repo.amd.com/rocm/tarball-multi-arch/
+ROCM_MULTIARCH_TARBALL_ARTIFACT=therock-dist-linux-multiarch-7.14.0.tar.gz
 AMDGPU_REPOSITORY=https://repo.radeon.com/amdgpu/${AMDGPU_RELEASE}/ubuntu
 AMDGPU_GPG_KEY_URL=https://repo.radeon.com/rocm/rocm.gpg.key
 SUPPORTED_OS_KEYS=ubuntu-24.04.4,ubuntu-26.04
@@ -63,8 +64,10 @@ reset_defaults() {
     WORKLOAD=compute
     INSTALL_METHOD=apt
     PACKAGE_PROFILE=full
-    GPU_ARCH=''
-    GPU_PRODUCT_NAME=''
+    GPU_ARCHES=''
+    GPU_PRODUCT_NAMES=''
+    unset GPU_ARCH GPU_PRODUCT_NAME
+    INSTALL_PLAN=()
     DRIVER_MODE=auto
     SHOW_HELP=false
     REBOOT_REQUIRED=false
@@ -94,6 +97,46 @@ validate_artifact_gfx() {
     [[ $# -eq 1 && -n ${ROCM_714_ARTIFACT_RECORDS[$gfx]+x} ]] || return 1
 }
 
+normalize_records() {
+    local records=${1:-} record
+    local -a normalized_records=()
+
+    [[ $# -eq 1 && -n "$records" ]] || return 1
+    while IFS= read -r record || [[ -n "$record" ]]; do
+        [[ "$record" != *$'\r'* && "$record" =~ [^[:space:]] ]] || return 1
+        normalized_records+=("$record")
+    done < <(printf '%s' "$records")
+    ((${#normalized_records[@]})) || return 1
+    printf '%s\n' "${normalized_records[@]}" | LC_ALL=C sort -u
+}
+
+normalize_gfxes() {
+    local gfxes=${1:-} normalized_gfxes gfx
+
+    [[ $# -eq 1 ]] || return 1
+    normalized_gfxes=$(normalize_records "$gfxes") || return 1
+    while IFS= read -r gfx || [[ -n "$gfx" ]]; do
+        validate_artifact_gfx "$gfx" || return 1
+    done <<< "$normalized_gfxes"
+    printf '%s\n' "$normalized_gfxes"
+}
+
+records_to_csv() {
+    local records=${1:-} normalized_records record escaped_record csv=''
+
+    [[ $# -eq 1 ]] || return 1
+    normalized_records=$(normalize_records "$records") || return 1
+    while IFS= read -r record || [[ -n "$record" ]]; do
+        escaped_record=$record
+        if [[ "$record" == *,* || "$record" == *\"* ]]; then
+            escaped_record=${record//\"/\"\"}
+            escaped_record="\"${escaped_record}\""
+        fi
+        csv+="${csv:+,}${escaped_record}"
+    done <<< "$normalized_records"
+    printf '%s\n' "$csv"
+}
+
 resolve_package_name() {
     local profile=${1:-} gfx=${2:-} record package_suffix
 
@@ -105,21 +148,35 @@ resolve_package_name() {
 }
 
 resolve_pip_requirement() {
-    local gfx=${1:-} record pip_extra
+    local gfxes=${1:-} normalized_gfxes gfx record pip_extra
+    local requirement='rocm[libraries'
 
     [[ $# -eq 1 ]] || return 1
-    validate_artifact_gfx "$gfx" || return 1
-    record=${ROCM_714_ARTIFACT_RECORDS[$gfx]}
-    IFS='|' read -r _ pip_extra _ <<< "$record"
-    printf 'rocm[libraries,%s]==%s\n' "$pip_extra" "$ROCM_VERSION"
+    normalized_gfxes=$(normalize_gfxes "$gfxes") || return 1
+    [[ "$gfxes" == "$normalized_gfxes" ]] || return 1
+    while IFS= read -r gfx || [[ -n "$gfx" ]]; do
+        record=${ROCM_714_ARTIFACT_RECORDS[$gfx]}
+        IFS='|' read -r _ pip_extra _ <<< "$record"
+        requirement+=",${pip_extra}"
+    done <<< "$normalized_gfxes"
+    printf '%s]==%s\n' "$requirement" "$ROCM_VERSION"
 }
 
 resolve_tarball_artifact() {
-    local gfx=${1:-} record tarball_artifact
+    local gfxes=${1:-} normalized_gfxes gfx record tarball_artifact
+    local -a gfx_records=()
 
     [[ $# -eq 1 ]] || return 1
-    validate_artifact_gfx "$gfx" || return 1
-    record=${ROCM_714_ARTIFACT_RECORDS[$gfx]}
+    normalized_gfxes=$(normalize_gfxes "$gfxes") || return 1
+    [[ "$gfxes" == "$normalized_gfxes" ]] || return 1
+    while IFS= read -r gfx || [[ -n "$gfx" ]]; do
+        gfx_records+=("$gfx")
+    done <<< "$normalized_gfxes"
+    if ((${#gfx_records[@]} > 1)); then
+        printf '%s\n' "$ROCM_MULTIARCH_TARBALL_ARTIFACT"
+        return 0
+    fi
+    record=${ROCM_714_ARTIFACT_RECORDS[${gfx_records[0]}]}
     IFS='|' read -r _ _ tarball_artifact <<< "$record"
     printf '%s\n' "$tarball_artifact"
 }
@@ -172,6 +229,22 @@ trim_field() {
     printf '%s\n' "$value"
 }
 
+extract_rocminfo_gfxes() {
+    local rocminfo_output=${1:-} line name
+    local -a gfxes=()
+
+    [[ $# -eq 1 ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*Name:[[:space:]]*(.*)$ ]] || continue
+        name=$(trim_field "${BASH_REMATCH[1]}")
+        name=${name,,}
+        [[ "$name" =~ ^gfx[[:xdigit:]]+$ ]] || continue
+        gfxes+=("$name")
+    done < <(printf '%s' "$rocminfo_output")
+    ((${#gfxes[@]})) || return 1
+    normalize_records "$(printf '%s\n' "${gfxes[@]}")"
+}
+
 kfd_gfx_target() {
     local value=${1:-} parsed major minor stepping
 
@@ -197,10 +270,10 @@ kfd_gfx_target() {
     fi
 }
 
-detect_gpu_architecture() {
+detect_gpu_architectures() {
     local root=${1:-}
     local properties_file line cpu_cores='' gfx_target_version='' gfx
-    local -A seen=()
+    local -a gfxes=()
 
     [[ $# -eq 1 && -d "$root" ]] || return 1
     for properties_file in "$root"/*/properties; do
@@ -217,10 +290,10 @@ detect_gpu_architecture() {
         done < "$properties_file"
         [[ "$cpu_cores" == 0 && "$gfx_target_version" != 0 && -n "$gfx_target_version" ]] || continue
         gfx=$(kfd_gfx_target "$gfx_target_version") || return 1
-        seen["$gfx"]=1
+        gfxes+=("$gfx")
     done
-    [[ ${#seen[@]} -eq 1 ]] || return 1
-    printf '%s\n' "${!seen[@]}"
+    ((${#gfxes[@]})) || return 1
+    normalize_gfxes "$(printf '%s\n' "${gfxes[@]}")"
 }
 
 normalize_pci_id() {
@@ -250,88 +323,128 @@ lookup_amdgpu_product_name() {
     return 1
 }
 
-detect_gpu_product_name() {
+detect_gpu_product_names() {
     local drm_root=${1:-} ids_path=${2:-}
     local device_path product_name device revision
+    local -a product_names=()
 
     [[ -d "$drm_root" ]] || return 1
     for device_path in "$drm_root"/card[0-9]*/device; do
         [[ -d "$device_path" ]] || continue
         product_name=''
-        [[ -r "$device_path/product_name" ]] && IFS= read -r product_name < "$device_path/product_name"
+        if [[ -r "$device_path/product_name" ]]; then
+            if IFS= read -r product_name < "$device_path/product_name"; then
+                :
+            elif [[ -n "$product_name" ]]; then
+                :
+            else
+                product_name=''
+            fi
+        fi
         product_name=$(trim_field "$product_name")
         if [[ -n "$product_name" ]]; then
-            printf '%s\n' "$product_name"
-            return 0
+            product_names+=("$product_name")
+            continue
         fi
         [[ -r "$device_path/device" && -r "$device_path/revision" ]] || continue
-        IFS= read -r device < "$device_path/device"
-        IFS= read -r revision < "$device_path/revision"
+        device=''
+        revision=''
+        if IFS= read -r device < "$device_path/device"; then
+            :
+        elif [[ -z "$device" ]]; then
+            continue
+        fi
+        if IFS= read -r revision < "$device_path/revision"; then
+            :
+        elif [[ -z "$revision" ]]; then
+            continue
+        fi
         device=$(normalize_pci_id "$device") || continue
         revision=$(normalize_pci_id "$revision") || continue
-        lookup_amdgpu_product_name "$ids_path" "$device" "$revision" && return 0
+        if product_name=$(lookup_amdgpu_product_name "$ids_path" "$device" "$revision"); then
+            product_names+=("$product_name")
+        fi
     done
-    return 1
+    ((${#product_names[@]})) || return 1
+    normalize_records "$(printf '%s\n' "${product_names[@]}")"
 }
 
 resolve_gpu_identity() {
-    local requested_arch=${1:-} detected_arch
+    local requested_arches=${GPU_ARCHES:-}
 
-    GPU_ARCH=''
-    GPU_PRODUCT_NAME=''
-    [[ $# -eq 1 ]] || return 64
-    [[ -z "$requested_arch" ]] || is_supported_gpu_arch "$requested_arch" || return 64
-    if [[ -n "$requested_arch" ]]; then
-        GPU_ARCH=$requested_arch
+    GPU_ARCHES=''
+    GPU_PRODUCT_NAMES=''
+    [[ $# -eq 0 ]] || return 64
+    if [[ -n "$requested_arches" ]]; then
+        GPU_ARCHES=$(normalize_gfxes "$requested_arches") || return 64
     else
-        detected_arch=$(detect_gpu_architecture "${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}") || return 1
-        is_supported_gpu_arch "$detected_arch" || return 1
-        GPU_ARCH=$detected_arch
+        GPU_ARCHES=$(detect_gpu_architectures "${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}") || return 1
     fi
-    GPU_PRODUCT_NAME=$(detect_gpu_product_name "${GPU_DETECTION_DRM_ROOT:-/sys/class/drm}" "${AMDGPU_IDS_PATH:-/usr/share/libdrm/amdgpu.ids}" 2>/dev/null || true)
+    GPU_PRODUCT_NAMES=$(detect_gpu_product_names "${GPU_DETECTION_DRM_ROOT:-/sys/class/drm}" "${AMDGPU_IDS_PATH:-/usr/share/libdrm/amdgpu.ids}" 2>/dev/null || true)
 }
 
 install_plan_keys() {
-    printf '%s\n' gfx os_key repo_slug method artifact driver_mode
+    printf '%s\n' gfxes os_key repo_slug method artifacts driver_mode
 }
 
 reset_install_plan() {
     INSTALL_PLAN=()
 }
 
-resolve_plan_artifact() {
-    local method=${1:-} gfx=${2:-}
+resolve_plan_artifacts() {
+    local method=${1:-} gfx_collection=${2:-} normalized_gfxes gfx
 
+    [[ $# -eq 2 ]] || return 1
+    normalized_gfxes=$(normalize_gfxes "$gfx_collection") || return 1
+    [[ "$gfx_collection" == "$normalized_gfxes" ]] || return 1
     case "$method" in
-        apt) resolve_package_name full "$gfx" ;;
-        pip) resolve_pip_requirement "$gfx" ;;
-        tarball) resolve_tarball_artifact "$gfx" ;;
+        apt)
+            while IFS= read -r gfx || [[ -n "$gfx" ]]; do
+                resolve_package_name full "$gfx" || return $?
+            done <<< "$normalized_gfxes"
+            ;;
+        pip) resolve_pip_requirement "$normalized_gfxes" ;;
+        tarball) resolve_tarball_artifact "$normalized_gfxes" ;;
         *) return 1 ;;
     esac
 }
 
 validate_install_plan() {
-    local key gfx os_key repo_slug expected_artifact expected_driver
+    local key gfxes normalized_gfxes os_key os_record repo_slug
+    local expected_artifacts expected_driver normalized_product_names
 
     [[ ${#INSTALL_PLAN[@]} -eq 6 || ${#INSTALL_PLAN[@]} -eq 7 ]] || return 1
+    for key in "${!INSTALL_PLAN[@]}"; do
+        case "$key" in
+            gfxes|os_key|repo_slug|method|artifacts|driver_mode|product_names) ;;
+            *) return 1 ;;
+        esac
+    done
     while IFS= read -r key; do
         [[ -v "INSTALL_PLAN[$key]" ]] || return 1
     done < <(install_plan_keys)
-    gfx=${INSTALL_PLAN[gfx]}
-    validate_artifact_gfx "$gfx" || return 1
+    gfxes=${INSTALL_PLAN[gfxes]}
+    normalized_gfxes=$(normalize_gfxes "$gfxes") || return 1
+    [[ "$gfxes" == "$normalized_gfxes" ]] || return 1
     os_key=${INSTALL_PLAN[os_key]}
-    repo_slug=$(resolve_os_record "$os_key") || return 1
-    repo_slug=${repo_slug#*|}
+    os_record=$(resolve_os_record "$os_key") || return 1
+    repo_slug=${os_record#*|}
     [[ "${INSTALL_PLAN[repo_slug]}" == "$repo_slug" ]] || return 1
-    expected_artifact=$(resolve_plan_artifact "${INSTALL_PLAN[method]}" "$gfx") || return 1
-    [[ "${INSTALL_PLAN[artifact]}" == "$expected_artifact" ]] || return 1
-    expected_driver=$(resolve_driver_mode "$DRIVER_MODE") || return 1
-    [[ "${INSTALL_PLAN[driver_mode]}" == "$expected_driver" ]]
+    expected_artifacts=$(resolve_plan_artifacts "${INSTALL_PLAN[method]}" "$gfxes") || return 1
+    [[ "${INSTALL_PLAN[artifacts]}" == "$expected_artifacts" ]] || return 1
+    expected_driver=$(resolve_driver_mode "${DRIVER_MODE:-}") || return 1
+    [[ "${INSTALL_PLAN[driver_mode]}" == "$expected_driver" ]] || return 1
+    if [[ -v 'INSTALL_PLAN[product_names]' ]]; then
+        normalized_product_names=$(normalize_records "${INSTALL_PLAN[product_names]}") || return 1
+        [[ "${INSTALL_PLAN[product_names]}" == "$normalized_product_names" ]] || return 1
+    fi
 }
 
 resolve_install_plan() {
-    local os_key os_record repo_slug artifact driver_mode
+    local os_key os_record repo_slug artifacts driver_mode normalized_gfxes
+    local normalized_product_names=''
 
+    reset_install_plan
     [[ "${OS_ID:-}" == ubuntu && "${ARCH:-}" == x86_64 ]] || return 1
     [[ "${WORKLOAD:-}" == compute && "${PACKAGE_PROFILE:-}" == full ]] || return 1
     [[ "${SKIP_SSH:-}" == true || "${SKIP_SSH:-}" == false ]] || return 1
@@ -339,35 +452,52 @@ resolve_install_plan() {
     [[ "${ROOT_PASSWORD:-}" != *$'\n'* && "${ROOT_PASSWORD:-}" != *$'\r'* ]] || return 1
     case "${INSTALL_METHOD:-}" in apt|pip|tarball) ;; *) return 1 ;; esac
     os_key=$(normalize_os_key "$OS_ID" "${OS_VERSION:-}") || return 1
-    validate_artifact_gfx "${GPU_ARCH:-}" || return 1
+    normalized_gfxes=$(normalize_gfxes "${GPU_ARCHES:-}") || return 1
+    [[ "${GPU_ARCHES:-}" == "$normalized_gfxes" ]] || return 1
+    if [[ -n ${GPU_PRODUCT_NAMES:-} ]]; then
+        normalized_product_names=$(normalize_records "$GPU_PRODUCT_NAMES") || return 1
+        [[ "$GPU_PRODUCT_NAMES" == "$normalized_product_names" ]] || return 1
+    fi
     driver_mode=$(resolve_driver_mode "$DRIVER_MODE") || return 1
     if [[ -n ${KERNEL_VERSION:-} ]]; then
         validate_ubuntu_kernel "$driver_mode" "$os_key" "$KERNEL_VERSION" || return 1
     fi
     os_record=$(resolve_os_record "$os_key") || return 1
     repo_slug=${os_record#*|}
-    artifact=$(resolve_plan_artifact "$INSTALL_METHOD" "$GPU_ARCH") || return 1
+    artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$normalized_gfxes") || return 1
     INSTALL_PLAN=(
-        [gfx]="$GPU_ARCH"
+        [gfxes]="$normalized_gfxes"
         [os_key]="$os_key"
         [repo_slug]="$repo_slug"
         [method]="$INSTALL_METHOD"
-        [artifact]="$artifact"
+        [artifacts]="$artifacts"
         [driver_mode]="$driver_mode"
     )
-    [[ -z "$GPU_PRODUCT_NAME" ]] || INSTALL_PLAN[product_name]=$GPU_PRODUCT_NAME
-    validate_install_plan
+    [[ -z "$normalized_product_names" ]] || INSTALL_PLAN[product_names]=$normalized_product_names
+    if validate_install_plan; then
+        return 0
+    fi
+    reset_install_plan
+    return 1
 }
 
 print_install_plan() {
-    local key
+    local gfx_csv artifact_csv product_name_csv output
 
     validate_install_plan || return 1
-    printf '%s\n' 'INSTALL PLAN'
-    while IFS= read -r key; do
-        printf '%s=%s\n' "$key" "${INSTALL_PLAN[$key]}"
-    done < <(install_plan_keys)
-    [[ -z "${INSTALL_PLAN[product_name]:-}" ]] || printf 'product_name=%s\n' "${INSTALL_PLAN[product_name]}"
+    gfx_csv=$(records_to_csv "${INSTALL_PLAN[gfxes]}") || return 1
+    artifact_csv=$(records_to_csv "${INSTALL_PLAN[artifacts]}") || return 1
+    output=$'INSTALL PLAN\n'
+    output+="gfx=${gfx_csv}"$'\n'
+    output+="os=${INSTALL_PLAN[os_key]}"$'\n'
+    output+="method=${INSTALL_PLAN[method]}"$'\n'
+    output+="artifact=${artifact_csv}"$'\n'
+    output+="driver_mode=${INSTALL_PLAN[driver_mode]}"$'\n'
+    if [[ -v 'INSTALL_PLAN[product_names]' ]]; then
+        product_name_csv=$(records_to_csv "${INSTALL_PLAN[product_names]}") || return 1
+        output+="product_name=${product_name_csv}"$'\n'
+    fi
+    printf '%s' "$output"
 }
 
 detect_system() {
@@ -389,21 +519,45 @@ require_root() {
 }
 
 verify_installation() {
-    local install_root rocminfo_output amd_smi_output
+    local install_root rocminfo_output amd_smi_output requested_records requested_gfxes visible_gfxes requested_gfx visible_gfx found
 
     if [[ "${REBOOT_REQUIRED:-false}" == true ]]; then
         printf '%s\n' 'ROCm installation is pending reboot; verification has not been run.'
         return 0
     fi
+    if [[ -v 'INSTALL_PLAN[gfxes]' ]]; then
+        requested_records=${INSTALL_PLAN[gfxes]}
+        requested_gfxes=$(normalize_gfxes "$requested_records") || return 1
+        [[ "$requested_records" == "$requested_gfxes" ]] || return 1
+    else
+        requested_records=${GPU_ARCHES:-}
+        requested_gfxes=$(normalize_gfxes "$requested_records") || return 1
+    fi
     install_root=$(rocm_install_root) || return $?
     rocminfo_output=$(capture_cmd "${install_root}/bin/rocminfo") || return $?
     amd_smi_output=$(capture_cmd "${install_root}/bin/amd-smi" version) || return $?
-    [[ -n "$rocminfo_output" ]] || return 1
+    visible_gfxes=$(extract_rocminfo_gfxes "$rocminfo_output") || {
+        printf '%s\n' 'ROCm verification failed: rocminfo did not report a concrete gfx agent.' >&2
+        return 1
+    }
+    while IFS= read -r requested_gfx || [[ -n "$requested_gfx" ]]; do
+        found=false
+        while IFS= read -r visible_gfx || [[ -n "$visible_gfx" ]]; do
+            if [[ "$visible_gfx" == "$requested_gfx" ]]; then
+                found=true
+                break
+            fi
+        done <<< "$visible_gfxes"
+        if [[ "$found" != true ]]; then
+            printf 'ROCm verification failed: requested gfx target %s was not reported by rocminfo.\n' "$requested_gfx" >&2
+            return 1
+        fi
+    done <<< "$requested_gfxes"
     [[ "$amd_smi_output" =~ (^|[^0-9.])7\.14\.0([^0-9.]|$) ]] || {
         printf '%s\n' 'ROCm verification failed: expected version 7.14.0.' >&2
         return 1
     }
-    printf '%s\n' 'ROCm 7.14.0 verified with rocminfo and amd-smi.'
+    printf '%s\n' 'ROCm 7.14.0 verified for requested gfx agents with rocminfo and amd-smi.'
 }
 
 run_cmd() {
@@ -470,34 +624,54 @@ configure_rocm_apt_repository() {
 }
 
 install_rocm_apt() {
-    local package_name=${INSTALL_PLAN[artifact]:-} legacy_layout_target
+    local artifacts=${INSTALL_PLAN[artifacts]:-} package_name legacy_layout_target
+    local -a package_names=()
 
-    [[ -n "$package_name" ]] || return 1
+    [[ -n "$artifacts" ]] || return 1
+    while IFS= read -r package_name || [[ -n "$package_name" ]]; do
+        [[ "$package_name" != *$'\r'* && "$package_name" =~ [^[:space:]] ]] || return 1
+        package_names+=("$package_name")
+    done < <(printf '%s' "$artifacts")
+    ((${#package_names[@]})) || return 1
     configure_rocm_apt_repository || return $?
     run_cmd apt-get update || return $?
     legacy_layout_target=$(capture_legacy_rocm_layout_target /opt/rocm) || return $?
     purge_legacy_rocm_packages || return $?
     repair_legacy_rocm_layout /opt/rocm "$legacy_layout_target" || return $?
-    run_cmd apt-get install --yes "$package_name" || return $?
+    run_cmd apt-get install --yes "${package_names[@]}" || return $?
     rocm_apt_verification_root_exists /opt/rocm
 }
 
 install_rocm_pip() {
-    local requirement=${INSTALL_PLAN[artifact]:-}
+    local artifacts=${INSTALL_PLAN[artifacts]:-} requirement
     local venv_path="/opt/rocm-${ROCM_VERSION}-venv"
+    local -a requirements=()
 
-    [[ -n "$requirement" ]] || return 1
+    [[ -n "$artifacts" ]] || return 1
+    while IFS= read -r requirement || [[ -n "$requirement" ]]; do
+        [[ "$requirement" != *$'\r'* && "$requirement" =~ [^[:space:]] ]] || return 1
+        requirements+=("$requirement")
+    done < <(printf '%s' "$artifacts")
+    [[ ${#requirements[@]} -eq 1 ]] || return 1
+    requirement=${requirements[0]}
     run_cmd python3 -m venv "$venv_path" || return $?
     run_cmd "${venv_path}/bin/pip" install --index-url "$ROCM_WHL_INDEX" "$requirement"
 }
 
 install_rocm_tarball() {
-    local artifact=${INSTALL_PLAN[artifact]:-}
+    local artifacts=${INSTALL_PLAN[artifacts]:-} artifact
     local install_root="/opt/rocm-${ROCM_VERSION}"
     local temp_dir stage_root backup_root archive_url archive_path status
     local had_existing_root=false
+    local -a artifacts_to_install=()
 
-    [[ -n "$artifact" ]] || return 1
+    [[ -n "$artifacts" ]] || return 1
+    while IFS= read -r artifact || [[ -n "$artifact" ]]; do
+        [[ "$artifact" != *$'\r'* && "$artifact" =~ [^[:space:]] ]] || return 1
+        artifacts_to_install+=("$artifact")
+    done < <(printf '%s' "$artifacts")
+    [[ ${#artifacts_to_install[@]} -eq 1 ]] || return 1
+    artifact=${artifacts_to_install[0]}
     temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/rocm-tarball.XXXXXX") || return $?
     stage_root="${temp_dir}/staging"
     backup_root="${temp_dir}/previous-rocm-${ROCM_VERSION}"
@@ -979,7 +1153,7 @@ Usage: sudo $0 [options]
 
 Options:
   --method METHOD          Installation method: apt, pip, or tarball
-  --gpu-arch ARCH          Override automatic KFD gfx detection
+  --gpu-arch ARCH          Override automatic KFD gfx detection; may be repeated
   --driver-mode MODE       Driver mode: auto, inbox, or dkms
   --skip-ssh               Skip SSH setup
   --root-password PASS     Set the root password during installation
@@ -1007,7 +1181,8 @@ parse_args() {
                 ;;
             --gpu-arch)
                 require_option_value "$1" "${2:-}" || return 1
-                GPU_ARCH=$2
+                [[ -z "$GPU_ARCHES" ]] || GPU_ARCHES+=$'\n'
+                GPU_ARCHES+=$2
                 shift 2
                 ;;
             --driver-mode)
@@ -1071,15 +1246,15 @@ main() {
     fi
     require_root || return $?
     detect_system || return $?
-    if [[ "$VERIFY_ONLY" == true ]]; then
-        verify_installation
-        return $?
-    fi
     if [[ "$UNINSTALL" == true ]]; then
         do_uninstall
         return $?
     fi
-    resolve_gpu_identity "$GPU_ARCH" || return $?
+    resolve_gpu_identity || return $?
+    if [[ "$VERIFY_ONLY" == true ]]; then
+        verify_installation
+        return $?
+    fi
     resolve_install_plan || return $?
     print_install_plan || return $?
     confirm_install_plan || return $?

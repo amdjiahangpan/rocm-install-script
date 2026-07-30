@@ -1,44 +1,105 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2034
 set -euo pipefail
+# shellcheck source=test_helpers.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
 
 observed_fixture="${ROOT_DIR}/tests/fixtures/aup-395-23"
 observed_kfd_root="${observed_fixture}/kfd"
 observed_drm_root="${observed_fixture}/drm"
 observed_ids="${observed_fixture}/amdgpu.ids"
+heterogeneous_fixture="${ROOT_DIR}/tests/fixtures/gfx1151-gfx1201"
+heterogeneous_kfd_root="${heterogeneous_fixture}/kfd"
+heterogeneous_drm_root="${heterogeneous_fixture}/drm"
+heterogeneous_ids="${heterogeneous_fixture}/amdgpu.ids"
 
 assert_eq "gfx1151" "$(kfd_gfx_target 110501)" "KFD 110501 decodes with AMD's decimal-field algorithm"
 assert_eq "gfx90a" "$(kfd_gfx_target 90010)" "KFD stepping is rendered as a hexadecimal gfx digit"
-assert_eq "gfx1151" "$(detect_gpu_architecture "$observed_kfd_root")" "observed KFD CPU node is ignored and GPU node resolves gfx1151"
-assert_eq "AMD Radeon 8060S Graphics" "$(detect_gpu_product_name "$observed_drm_root" "$observed_ids")" "empty sysfs product name falls back to exact libdrm IDs row"
+assert_eq "gfx1151" "$(detect_gpu_architectures "$observed_kfd_root")" "observed KFD CPU node is ignored and GPU node resolves gfx1151"
+assert_eq "AMD Radeon 8060S Graphics" "$(detect_gpu_product_names "$observed_drm_root" "$observed_ids")" "observed empty sysfs product name falls back to exact libdrm IDs row"
+assert_eq $'gfx1151\ngfx1201' "$(detect_gpu_architectures "$heterogeneous_kfd_root")" "heterogeneous KFD nodes normalize all supported targets"
+assert_eq $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700' "$(detect_gpu_product_names "$heterogeneous_drm_root" "$heterogeneous_ids")" "every DRM card contributes its direct or exact-ID product name"
+strict_product_names=''
+if strict_product_names=$(bash -Eeuo pipefail -c '
+    ROCM_INSTALL_LIBRARY_MODE=1
+    source "$1/rocm-install.sh"
+    detect_gpu_product_names "$2/drm" "$2/amdgpu.ids"
+' bash "$ROOT_DIR" "$heterogeneous_fixture"); then
+    :
+else
+    fail "strict-mode DRM product discovery reaches the empty-name PCI-ID fallback"
+fi
+assert_eq $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700' "$strict_product_names" "strict-mode DRM product discovery emits both names"
 
 GPU_DETECTION_KFD_ROOT=$observed_kfd_root
 GPU_DETECTION_DRM_ROOT=$observed_drm_root
 AMDGPU_IDS_PATH=$observed_ids
-assert_success "observed fixture resolves the unique architecture" resolve_gpu_identity ''
-assert_eq "gfx1151" "$GPU_ARCH" "observed KFD architecture is stored"
-assert_eq "AMD Radeon 8060S Graphics" "$GPU_PRODUCT_NAME" "observed product name is informational"
+GPU_ARCHES=''
+assert_success "observed fixture resolves its architecture collection" resolve_gpu_identity
+assert_eq "gfx1151" "$GPU_ARCHES" "observed KFD architecture collection is stored"
+assert_eq "AMD Radeon 8060S Graphics" "$GPU_PRODUCT_NAMES" "observed product-name collection is informational"
+GPU_DETECTION_DRM_ROOT="${TEST_TEMP_ROOT}/missing-drm-root"
+GPU_ARCHES=''
+assert_success "product-name discovery failure does not block architecture discovery" resolve_gpu_identity
+assert_eq "gfx1151" "$GPU_ARCHES" "architecture discovery remains available without product information"
+assert_eq "" "$GPU_PRODUCT_NAMES" "missing product information remains empty and informational"
 
-multi_root="${TEST_TEMP_ROOT}/kfd-multiple"
-mkdir -p "${multi_root}/0" "${multi_root}/1"
-printf 'cpu_cores_count 0\ngfx_target_version 110501\n' > "${multi_root}/0/properties"
-printf 'cpu_cores_count 0\ngfx_target_version 120001\n' > "${multi_root}/1/properties"
-assert_fails "multiple unique KFD gfx targets require an explicit override" detect_gpu_architecture "$multi_root"
-GPU_DETECTION_KFD_ROOT=$multi_root
-assert_success "explicit gfx permits a multiple-GPU host" resolve_gpu_identity gfx1151
-assert_eq "gfx1151" "$GPU_ARCH" "explicit gfx is retained"
-assert_fails "unsupported explicit gfx is rejected" resolve_gpu_identity gfx9999
+GPU_DETECTION_KFD_ROOT=$heterogeneous_kfd_root
+GPU_DETECTION_DRM_ROOT=$heterogeneous_drm_root
+AMDGPU_IDS_PATH=$heterogeneous_ids
+GPU_ARCHES=''
+assert_success "heterogeneous fixture resolves all architectures" resolve_gpu_identity
+assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "automatic discovery stores normalized architecture collection"
+assert_eq $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700' "$GPU_PRODUCT_NAMES" "automatic discovery stores normalized product-name collection"
+
+GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
+GPU_ARCHES=$'gfx1201\ngfx1151'
+assert_success "explicit architectures replace unavailable KFD discovery" resolve_gpu_identity
+assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "explicit architectures normalize before storage"
+GPU_ARCHES=$'gfx1201\ngfx1151\ngfx1201'
+assert_success "duplicate explicit architectures normalize" resolve_gpu_identity
+assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "duplicate explicit architectures are removed"
+GPU_ARCHES=$'gfx1201\ngfx9999'
+GPU_PRODUCT_NAMES='AMD stale product'
+assert_fails "an unsupported explicit member rejects the complete architecture collection" resolve_gpu_identity
+assert_eq "" "$GPU_ARCHES" "failed explicit architecture resolution clears architecture collection"
+assert_eq "" "$GPU_PRODUCT_NAMES" "failed explicit architecture resolution clears product-name collection"
+
+GPU_ARCHES=gfx1151
+GPU_PRODUCT_NAMES='AMD stale product'
+assert_status 64 "GPU identity rejects unexpected arguments" resolve_gpu_identity gfx1201
+assert_eq "" "$GPU_ARCHES" "unexpected identity arguments clear architecture collection"
+assert_eq "" "$GPU_PRODUCT_NAMES" "unexpected identity arguments clear product-name collection"
 
 product_root="${TEST_TEMP_ROOT}/drm-product"
 mkdir -p "${product_root}/card0/device"
 printf 'AMD Radeon Test Graphics\n' > "${product_root}/card0/device/product_name"
-assert_eq "AMD Radeon Test Graphics" "$(detect_gpu_product_name "$product_root" "$observed_ids")" "nonempty sysfs product name has precedence"
+assert_eq "AMD Radeon Test Graphics" "$(detect_gpu_product_names "$product_root" "$observed_ids")" "nonempty sysfs product name has precedence"
+
+unsupported_kfd_root="${TEST_TEMP_ROOT}/kfd-unsupported"
+mkdir -p "${unsupported_kfd_root}/0" "${unsupported_kfd_root}/1"
+printf 'cpu_cores_count 0\ngfx_target_version 110501\n' > "${unsupported_kfd_root}/0/properties"
+printf 'cpu_cores_count 0\ngfx_target_version 100001\n' > "${unsupported_kfd_root}/1/properties"
+assert_fails "an unsupported automatic target rejects the complete architecture collection" detect_gpu_architectures "$unsupported_kfd_root"
+
+no_gpu_kfd_root="${TEST_TEMP_ROOT}/kfd-no-gpu"
+mkdir -p "${no_gpu_kfd_root}/0"
+printf 'cpu_cores_count 16\ngfx_target_version 0\n' > "${no_gpu_kfd_root}/0/properties"
+assert_fails "zero KFD GPU targets are rejected" detect_gpu_architectures "$no_gpu_kfd_root"
+GPU_DETECTION_KFD_ROOT=$no_gpu_kfd_root
+GPU_DETECTION_DRM_ROOT=$heterogeneous_drm_root
+AMDGPU_IDS_PATH=$heterogeneous_ids
+GPU_ARCHES=''
+assert_fails "informational product names cannot infer an architecture" resolve_gpu_identity
+assert_eq "" "$GPU_ARCHES" "failed automatic detection leaves no architecture collection"
+assert_eq "" "$GPU_PRODUCT_NAMES" "product names are not stored when no architecture is detected"
 
 installer_source=$(<"${ROOT_DIR}/rocm-install.sh")
 assert_not_contains "$installer_source" "ROCM_714_MODEL_RECORDS" "installer has no model records"
 assert_not_contains "$installer_source" "--gpu-model" "installer has no model override"
 assert_not_contains "$installer_source" "lspci" "pre-install detection does not use lspci"
 assert_not_contains "$installer_source" "cpuinfo" "pre-install detection does not use cpuinfo"
+# shellcheck disable=SC2016
 assert_contains "$installer_source" 'capture_cmd "${install_root}/bin/rocminfo"' "post-install verification retains rocminfo"
 
 finish_tests "GPU detection"

@@ -1,30 +1,46 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2034,SC2317
 set -euo pipefail
+# shellcheck source=test_helpers.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
 
 artifact_fixture="${ROOT_DIR}/tests/fixtures/rocm-7.14-artifacts.tsv"
 
+assert_command_output_eq() {
+    local expected=$1 message=$2 output status
+    shift 2
+
+    if output=$("$@"); then
+        :
+    else
+        status=$?
+        fail "${message} (command failed with status ${status})"
+    fi
+    assert_eq "$expected" "$output" "$message"
+}
+
 IFS= read -r fixture_header < "$artifact_fixture"
 assert_eq $'gfx\tpackage_suffix\tpip_extra\ttarball_artifact' "$fixture_header" "artifact fixture contains apt, pip, and tarball data only"
 
-assert_eq "apt|ubuntu2404" "$(resolve_os_record ubuntu-24.04.4)" "Ubuntu 24.04 uses the ubuntu2404 APT repository"
-assert_eq "apt|ubuntu2604" "$(resolve_os_record ubuntu-26.04)" "Ubuntu 26.04 uses the ubuntu2604 APT repository"
+assert_command_output_eq "apt|ubuntu2404" "Ubuntu 24.04 uses the ubuntu2404 APT repository" resolve_os_record ubuntu-24.04.4
+assert_command_output_eq "apt|ubuntu2604" "Ubuntu 26.04 uses the ubuntu2604 APT repository" resolve_os_record ubuntu-26.04
 assert_eq "https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404" "${ROCM_PACKAGES_ROOT}/ubuntu2404" "Ubuntu 24.04 APT repository URL is exact"
 assert_eq "https://repo.amd.com/rocm/packages-multi-arch/ubuntu2604" "${ROCM_PACKAGES_ROOT}/ubuntu2604" "Ubuntu 26.04 APT repository URL is exact"
+assert_eq "therock-dist-linux-multiarch-7.14.0.tar.gz" "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "multi-GFX tarball artifact is fixed for ROCm 7.14.0"
 
 row_count=0
 while IFS=$'\t' read -r gfx package_suffix pip_extra tarball_artifact; do
     [[ "$gfx" == gfx ]] && continue
     row_count=$((row_count + 1))
-    assert_eq "amdrocm-core-sdk7.14-${package_suffix}" "$(resolve_package_name full "$gfx")" "${gfx} selects the full SDK package"
-    assert_eq "rocm[libraries,${pip_extra}]==7.14.0" "$(resolve_pip_requirement "$gfx")" "${gfx} selects the pinned wheel extra"
-    assert_eq "$tarball_artifact" "$(resolve_tarball_artifact "$gfx")" "${gfx} selects the reviewed tarball"
+    assert_command_output_eq "amdrocm-core-sdk7.14-${package_suffix}" "${gfx} selects the full SDK package" resolve_package_name full "$gfx"
+    assert_command_output_eq "rocm[libraries,${pip_extra}]==7.14.0" "${gfx} selects the pinned wheel extra" resolve_pip_requirement "$gfx"
+    assert_command_output_eq "$tarball_artifact" "${gfx} selects the reviewed tarball" resolve_tarball_artifact "$gfx"
 done < "$artifact_fixture"
 assert_eq "15" "$row_count" "all supported architectures have explicit artifacts"
 
-assert_eq "amdrocm-core-sdk7.14-gfx1151" "$(resolve_package_name full gfx1151)" "Ryzen full SDK package is architecture-specific"
-assert_eq "rocm[libraries,device-gfx1201]==7.14.0" "$(resolve_pip_requirement gfx1201)" "RX 9070 wheel requirement is architecture-specific"
-assert_eq "therock-dist-linux-gfx94X-dcgpu-7.14.0.tar.gz" "$(resolve_tarball_artifact gfx942)" "MI300X tarball uses the reviewed gfx94X bundle"
+assert_command_output_eq "amdrocm-core-sdk7.14-gfx1151" "Ryzen full SDK package is architecture-specific" resolve_package_name full gfx1151
+assert_command_output_eq "rocm[libraries,device-gfx1201]==7.14.0" "RX 9070 wheel requirement is architecture-specific" resolve_pip_requirement gfx1201
+assert_command_output_eq "therock-dist-linux-gfx94X-dcgpu-7.14.0.tar.gz" "MI300X tarball uses the reviewed gfx94X bundle" resolve_tarball_artifact gfx942
 
 assert_fails "unknown package architecture has no fallback" resolve_package_name full gfx9999
 assert_fails "unknown pip architecture has no fallback" resolve_pip_requirement gfx9999
@@ -32,6 +48,162 @@ assert_fails "unknown tarball architecture has no fallback" resolve_tarball_arti
 assert_fails "generic package selection is unavailable" resolve_package_name full all
 assert_fails "generic wheel selection is unavailable" resolve_pip_requirement all
 assert_fails "generic tarball selection is unavailable" resolve_tarball_artifact all
+
+multi_gfxes=$'gfx1151\ngfx1201'
+multi_packages=$'amdrocm-core-sdk7.14-gfx1151\namdrocm-core-sdk7.14-gfx1201'
+multi_requirement='rocm[libraries,device-gfx1151,device-gfx1201]==7.14.0'
+assert_command_output_eq "$multi_requirement" "pip composes one pinned requirement from normalized GFX records" resolve_pip_requirement "$multi_gfxes"
+assert_command_output_eq "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "multiple GFX records select the full multiarch tarball" resolve_tarball_artifact "$multi_gfxes"
+assert_fails "pip rejects an unsorted GFX collection" resolve_pip_requirement $'gfx1201\ngfx1151'
+assert_fails "pip rejects duplicate GFX records" resolve_pip_requirement $'gfx1151\ngfx1151'
+assert_fails "pip validates every GFX record" resolve_pip_requirement $'gfx1151\ngfx9999'
+assert_fails "tarball rejects an unsorted GFX collection" resolve_tarball_artifact $'gfx1201\ngfx1151'
+assert_fails "tarball rejects duplicate GFX records" resolve_tarball_artifact $'gfx1151\ngfx1151'
+assert_fails "tarball validates every GFX record before selecting multiarch" resolve_tarball_artifact $'gfx1151\ngfx9999'
+
+assert_command_output_eq "$multi_packages" "APT plans one package record per normalized GFX" resolve_plan_artifacts apt "$multi_gfxes"
+assert_command_output_eq "$multi_requirement" "pip plans one composed requirement record" resolve_plan_artifacts pip "$multi_gfxes"
+assert_command_output_eq "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "tarball plans one full multiarch artifact record" resolve_plan_artifacts tarball "$multi_gfxes"
+assert_command_output_eq "amdrocm-core-sdk7.14-gfx1151" "single-GFX APT composition stays exact" resolve_plan_artifacts apt gfx1151
+assert_command_output_eq "rocm[libraries,device-gfx1151]==7.14.0" "single-GFX pip composition stays exact" resolve_plan_artifacts pip gfx1151
+assert_command_output_eq "therock-dist-linux-gfx1151-7.14.0.tar.gz" "single-GFX tarball composition stays exact" resolve_plan_artifacts tarball gfx1151
+assert_fails "plan artifact composition rejects an unknown method" resolve_plan_artifacts runfile "$multi_gfxes"
+assert_fails "APT plan composition rejects a nonnormalized GFX collection" resolve_plan_artifacts apt $'gfx1201\ngfx1151'
+
+assert_eq $'gfxes\nos_key\nrepo_slug\nmethod\nartifacts\ndriver_mode' "$(install_plan_keys)" "install plan required keys are plural and fixed"
+assert_command_output_eq 'AMD Radeon Graphics' "plain CSV records stay unquoted" records_to_csv 'AMD Radeon Graphics'
+assert_command_output_eq '"AMD Radeon, Pro"' "CSV records containing commas are quoted" records_to_csv 'AMD Radeon, Pro'
+assert_command_output_eq '"AMD ""Radeon"" Pro"' "CSV records containing quotes are quoted and escaped" records_to_csv 'AMD "Radeon" Pro'
+
+set_valid_install_plan() {
+    local method=$1 gfxes=$2 product_names=${3:-} artifacts
+
+    if artifacts=$(resolve_plan_artifacts "$method" "$gfxes"); then
+        :
+    else
+        fail "valid install plan fixture could not resolve ${method} artifacts"
+    fi
+    INSTALL_PLAN=(
+        [gfxes]="$gfxes"
+        [os_key]=ubuntu-24.04.4
+        [repo_slug]=ubuntu2404
+        [method]="$method"
+        [artifacts]="$artifacts"
+        [driver_mode]=inbox
+    )
+    [[ $# -eq 2 ]] || INSTALL_PLAN[product_names]=$product_names
+}
+
+set_valid_install_plan apt "$multi_gfxes" $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700'
+assert_success "normalized plural install plan validates" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+# shellcheck disable=SC2154
+INSTALL_PLAN[unknown]=value
+assert_fails "install plan rejects unknown keys" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+unset 'INSTALL_PLAN[artifacts]'
+assert_fails "install plan rejects missing required keys" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+INSTALL_PLAN[gfx]=gfx1151
+assert_fails "install plan rejects legacy scalar GFX keys" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+INSTALL_PLAN[gfxes]=$'gfx1201\ngfx1151'
+assert_fails "install plan rejects unsorted GFX records" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+INSTALL_PLAN[gfxes]=$'gfx1151\ngfx1151'
+assert_fails "install plan rejects duplicate GFX records" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+INSTALL_PLAN[gfxes]=$'gfx1151\ngfx9999'
+assert_fails "install plan rejects unsupported GFX records" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+INSTALL_PLAN[artifacts]=amdrocm-core-sdk7.14-gfx1151
+assert_fails "install plan rejects method-specific artifact mismatches" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+INSTALL_PLAN[artifacts]=$'amdrocm-core-sdk7.14-gfx1201\namdrocm-core-sdk7.14-gfx1151'
+assert_fails "install plan rejects reversed valid APT artifact records byte-for-byte" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+INSTALL_PLAN[repo_slug]=ubuntu2604
+assert_fails "install plan rejects a repository that mismatches the OS" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+INSTALL_PLAN[driver_mode]=auto
+assert_fails "install plan rejects unresolved driver modes" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes"
+DRIVER_MODE=auto
+INSTALL_PLAN[driver_mode]=dkms
+assert_fails "install plan rejects a driver mode that mismatches the requested global mode" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes" $'AMD Radeon AI PRO R9700\nAMD Radeon 8060S Graphics'
+assert_fails "install plan rejects unsorted product-name records" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes" $'AMD Radeon 8060S Graphics\nAMD Radeon 8060S Graphics'
+assert_fails "install plan rejects duplicate product-name records" validate_install_plan
+
+set_valid_install_plan apt "$multi_gfxes" ''
+assert_fails "install plan rejects an empty optional product-name collection" validate_install_plan
+
+OS_ID=ubuntu
+OS_VERSION=24.04
+ARCH=x86_64
+KERNEL_VERSION=''
+WORKLOAD=compute
+PACKAGE_PROFILE=full
+SKIP_SSH=true
+DKMS_CLEANUP_POLICY=auto
+ROOT_PASSWORD=''
+INSTALL_METHOD=apt
+DRIVER_MODE=auto
+GPU_ARCHES=$multi_gfxes
+GPU_PRODUCT_NAMES=$'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700'
+assert_success "install plan resolves from normalized GPU identity collections" resolve_install_plan
+assert_eq "$multi_gfxes" "${INSTALL_PLAN[gfxes]}" "resolved plan retains normalized GFX records"
+assert_eq "$multi_packages" "${INSTALL_PLAN[artifacts]}" "resolved APT plan retains one package per GFX"
+assert_eq "$GPU_PRODUCT_NAMES" "${INSTALL_PLAN[product_names]}" "resolved plan retains normalized product-name records"
+assert_eq "7" "${#INSTALL_PLAN[@]}" "resolved plan contains only required keys and optional product names"
+
+expected_multi_plan=$'INSTALL PLAN\ngfx=gfx1151,gfx1201\nos=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1151,amdrocm-core-sdk7.14-gfx1201\ndriver_mode=inbox\nproduct_name=AMD Radeon 8060S Graphics,AMD Radeon AI PRO R9700'
+assert_command_output_eq "$expected_multi_plan" "multi-GFX install plan rendering is exact and omits repository internals" print_install_plan
+
+set_valid_install_plan pip "$multi_gfxes"
+expected_pip_plan=$'INSTALL PLAN\ngfx=gfx1151,gfx1201\nos=ubuntu-24.04.4\nmethod=pip\nartifact="rocm[libraries,device-gfx1151,device-gfx1201]==7.14.0"\ndriver_mode=inbox'
+assert_command_output_eq "$expected_pip_plan" "pip plan rendering quotes its comma-delimited requirement as one CSV field" print_install_plan
+
+set_valid_install_plan tarball gfx1151
+expected_single_plan=$'INSTALL PLAN\ngfx=gfx1151\nos=ubuntu-24.04.4\nmethod=tarball\nartifact=therock-dist-linux-gfx1151-7.14.0.tar.gz\ndriver_mode=inbox'
+assert_command_output_eq "$expected_single_plan" "single-GFX install plan rendering stays exact" print_install_plan
+assert_not_contains "$expected_single_plan" "repo_slug" "install plan rendering omits repo_slug"
+assert_not_contains "$expected_single_plan" "product_name" "install plan rendering omits absent optional product names"
+
+set_valid_install_plan apt gfx1151 $'AMD "Creator" Edition\nAMD Radeon, Pro'
+expected_quoted_product_plan=$'INSTALL PLAN\ngfx=gfx1151\nos=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1151\ndriver_mode=inbox\nproduct_name="AMD ""Creator"" Edition","AMD Radeon, Pro"'
+assert_command_output_eq "$expected_quoted_product_plan" "product names containing commas and quotes render as valid CSV fields" print_install_plan
+
+print_plan_to_full() {
+    print_install_plan > /dev/full
+}
+
+set_valid_install_plan apt gfx1151
+assert_fails "plan output errors propagate without product names" print_plan_to_full
+set_valid_install_plan apt gfx1151 'AMD Radeon Graphics'
+assert_fails "plan output errors propagate with product names" print_plan_to_full
+
+GPU_ARCHES=$multi_gfxes
+GPU_PRODUCT_NAMES=''
+assert_success "a valid plan resolves before stale-state regression" resolve_install_plan
+GPU_ARCHES=$'gfx1151\ngfx9999'
+assert_fails "invalid GPU architecture collection rejects plan resolution" resolve_install_plan
+assert_eq "0" "${#INSTALL_PLAN[@]}" "failed plan resolution clears the previously valid plan"
+assert_fails "no stale install plan can print after failed resolution" print_install_plan
 
 assert_command_before() {
     local first=$1 second=$2 commands=$3 message=$4 prefix
@@ -42,10 +214,51 @@ assert_command_before() {
     PASS_COUNT=$((PASS_COUNT + 1))
 }
 
-set_artifact_plan() {
+recorded_command_count() {
+    local command_fragment=$1 commands=$2 count=0
+
+    while [[ "$commands" == *"$command_fragment"* ]]; do
+        commands=${commands#*"$command_fragment"}
+        count=$((count + 1))
+    done
+    printf '%s\n' "$count"
+}
+
+assert_recorded_command_count() {
+    local expected=$1 command_fragment=$2 commands=$3 message=$4
+
+    assert_eq "$expected" "$(recorded_command_count "$command_fragment" "$commands")" "$message"
+}
+
+recorded_rocm_sdk_apt_install_commands() {
+    local commands=$1 command
+
+    while IFS= read -r command || [[ -n "$command" ]]; do
+        [[ "$command" == apt-get\ install\ --yes\ amdrocm-core-sdk7.14-* ]] || continue
+        printf '%s\n' "$command"
+    done < <(printf '%s' "$commands")
+}
+
+recorded_rocm_sdk_apt_install_count() {
+    local commands=$1 command count=0
+
+    while IFS= read -r command || [[ -n "$command" ]]; do
+        [[ "$command" == apt-get\ install\ --yes\ amdrocm-core-sdk7.14-* ]] || continue
+        count=$((count + 1))
+    done < <(printf '%s' "$commands")
+    printf '%s\n' "$count"
+}
+
+set_installer_plan() {
+    local method=$1 gfxes=$2 artifacts=$3
+
     INSTALL_PLAN=(
-        [repo_slug]=$1
-        [artifact]=$2
+        [gfxes]="$gfxes"
+        [os_key]=ubuntu-24.04.4
+        [repo_slug]=ubuntu2404
+        [method]="$method"
+        [artifacts]="$artifacts"
+        [driver_mode]=inbox
     )
 }
 
@@ -127,24 +340,48 @@ reset_test_state
 run_cmd() { recording_run_cmd "$@"; }
 rocm_apt_verification_root_exists() { return 0; }
 MOCK_DPKG_QUERY_OUTPUT=$'rocm-dev\tinstalled\nrocm\tinstalled\namdrocm-core-sdk7.14-gfx1151\tinstalled'
-set_artifact_plan ubuntu2604 "$(resolve_package_name full gfx1151)"
-assert_success "APT installation configures the ROCm multi-arch repository" install_rocm_apt
+apt_transaction='apt-get install --yes amdrocm-core-sdk7.14-gfx1151 amdrocm-core-sdk7.14-gfx1201'
+set_installer_plan apt "$multi_gfxes" "$multi_packages"
+assert_success "multi-GFX APT installation configures the ROCm multi-arch repository" install_rocm_apt
 assert_contains "$RECORDED_COMMANDS" "install -d -m 0755 /etc/apt/keyrings" "APT creates the keyring directory"
 assert_contains "$RECORDED_COMMANDS" "${ROCM_GPG_KEY_URL}" "APT downloads the ROCm signing key"
 assert_contains "$RECORDED_COMMANDS" "/etc/apt/keyrings/amdrocm.gpg" "APT stores the dearmored key at the required path"
-assert_contains "$RECORDED_COMMANDS" "${ROCM_PACKAGES_ROOT}/ubuntu2604" "APT writes the Ubuntu 26.04 ROCm source URL"
+assert_contains "$RECORDED_COMMANDS" "${ROCM_PACKAGES_ROOT}/ubuntu2404" "APT writes the Ubuntu 24.04 ROCm source URL"
 assert_contains "$RECORDED_COMMANDS" 'stable\ main' "APT writes the stable ROCm source suite and component"
 assert_contains "$RECORDED_COMMANDS" "apt-get update" "APT refreshes package metadata after repository setup"
 assert_contains "$RECORDED_COMMANDS" "apt-get purge --yes rocm rocm-dev" "APT removes only installed legacy ROCm packages"
 assert_not_contains "$RECORDED_COMMANDS" "apt-get purge --yes amdrocm" "APT never purges amdrocm packages during legacy migration"
-assert_command_before "apt-get purge --yes rocm rocm-dev" "apt-get install --yes amdrocm-core-sdk7.14-gfx1151" "$RECORDED_COMMANDS" "legacy ROCm purge happens before the current APT package install"
+assert_recorded_command_count "1" "${ROCM_PACKAGES_ROOT}/ubuntu2404" "$RECORDED_COMMANDS" "APT configures its repository once for all GFX packages"
+assert_recorded_command_count "1" "apt-get update" "$RECORDED_COMMANDS" "APT refreshes package metadata once for all GFX packages"
+assert_recorded_command_count "1" "apt-get purge --yes rocm rocm-dev" "$RECORDED_COMMANDS" "APT migrates legacy ROCm packages once for all GFX packages"
+assert_recorded_command_count "1" "mv /opt/rocm-7.1.0 /opt/rocm" "$RECORDED_COMMANDS" "APT repairs the legacy layout once for all GFX packages"
+assert_command_before "apt-get purge --yes rocm rocm-dev" "$apt_transaction" "$RECORDED_COMMANDS" "legacy ROCm purge happens before the current APT package install"
 assert_command_before "apt-get purge --yes rocm rocm-dev" "mv /opt/rocm-7.1.0 /opt/rocm" "$RECORDED_COMMANDS" "legacy layout repair happens after package purge"
-assert_command_before "mv /opt/rocm-7.1.0 /opt/rocm" "apt-get install --yes amdrocm-core-sdk7.14-gfx1151" "$RECORDED_COMMANDS" "legacy layout repair happens before current package installation"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk7.14-gfx1151" "APT installs the exact full SDK package"
+assert_command_before "mv /opt/rocm-7.1.0 /opt/rocm" "$apt_transaction" "$RECORDED_COMMANDS" "legacy layout repair happens before current package installation"
+assert_eq "1" "$(recorded_rocm_sdk_apt_install_count "$RECORDED_COMMANDS")" "APT executes exactly one ROCm SDK install transaction"
+assert_eq "$apt_transaction" "$(recorded_rocm_sdk_apt_install_commands "$RECORDED_COMMANDS")" "the sole ROCm SDK install transaction contains both exact packages"
+
+reset_test_state
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan apt "$multi_gfxes" ''
+assert_fails "APT rejects a zero-record artifact collection before repository mutation" install_rocm_apt
+assert_eq '' "$RECORDED_COMMANDS" "zero-record APT artifact collection runs no commands"
+
+reset_test_state
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan apt "$multi_gfxes" $'amdrocm-core-sdk7.14-gfx1151\n\namdrocm-core-sdk7.14-gfx1201'
+assert_fails "APT rejects a blank artifact record before repository mutation" install_rocm_apt
+assert_eq '' "$RECORDED_COMMANDS" "blank APT artifact record runs no commands"
+
+reset_test_state
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan apt "$multi_gfxes" $'amdrocm-core-sdk7.14-gfx1151\r\namdrocm-core-sdk7.14-gfx1201'
+assert_fails "APT rejects a carriage-return artifact record before repository mutation" install_rocm_apt
+assert_eq '' "$RECORDED_COMMANDS" "carriage-return APT artifact record runs no commands"
 
 reset_test_state
 RUN_CMD_STATUS=23
-set_artifact_plan ubuntu2404 "$(resolve_package_name full gfx1201)"
+set_installer_plan apt gfx1201 "$(resolve_package_name full gfx1201)"
 assert_status 23 "a required APT repository command propagates its exact status" install_rocm_apt
 assert_not_contains "$RECORDED_COMMANDS" "apt-get update" "APT does not continue after a repository failure"
 
@@ -156,7 +393,7 @@ apt_purge_fails() {
 reset_test_state
 MOCK_DPKG_QUERY_OUTPUT=$'rocm\tinstalled\namdrocm-core-sdk7.14-gfx1151\tinstalled'
 run_cmd() { apt_purge_fails "$@"; }
-set_artifact_plan ubuntu2604 "$(resolve_package_name full gfx1151)"
+set_installer_plan apt gfx1151 "$(resolve_package_name full gfx1151)"
 assert_status 23 "legacy ROCm purge failure stops the current APT install" install_rocm_apt
 assert_contains "$RECORDED_COMMANDS" "apt-get purge --yes rocm" "APT attempts the exact legacy package purge"
 assert_not_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk7.14-gfx1151" "APT does not install the current package after a legacy purge failure"
@@ -165,30 +402,95 @@ reset_test_state
 RUN_CMD_STATUS=0
 MOCK_DPKG_QUERY_OUTPUT=""
 run_cmd() { recording_run_cmd "$@"; }
-set_artifact_plan ubuntu2604 "$(resolve_pip_requirement gfx1151)"
-assert_success "pip installs ROCm into the fixed virtual environment" install_rocm_pip
+set_installer_plan pip "$multi_gfxes" "$multi_requirement"
+assert_success "pip installs the multi-GFX ROCm requirement into the fixed virtual environment" install_rocm_pip
 assert_contains "$RECORDED_COMMANDS" "python3 -m venv /opt/rocm-7.14.0-venv" "pip creates the versioned virtual environment"
 assert_contains "$RECORDED_COMMANDS" "/opt/rocm-7.14.0-venv/bin/pip install --index-url ${ROCM_WHL_INDEX}" "pip uses the multi-architecture wheel index"
-assert_contains "$RECORDED_COMMANDS" 'rocm\[libraries\,device-gfx1151\]==7.14.0' "pip installs the exact architecture requirement"
+assert_contains "$RECORDED_COMMANDS" 'rocm\[libraries\,device-gfx1151\,device-gfx1201\]==7.14.0' "pip installs one requirement containing both architecture extras"
+assert_recorded_command_count "1" "/opt/rocm-7.14.0-venv/bin/pip install --index-url" "$RECORDED_COMMANDS" "pip executes exactly one install command"
+
+reset_test_state
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan pip "$multi_gfxes" $'rocm[libraries,device-gfx1151]==7.14.0\nrocm[libraries,device-gfx1201]==7.14.0'
+assert_fails "pip rejects multiple artifact records before virtual-environment mutation" install_rocm_pip
+assert_eq '' "$RECORDED_COMMANDS" "multiple pip artifact records run no commands"
+
+reset_test_state
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan pip "$multi_gfxes" ''
+assert_fails "pip rejects a zero-record artifact collection before virtual-environment mutation" install_rocm_pip
+assert_eq '' "$RECORDED_COMMANDS" "zero-record pip artifact collection runs no commands"
+
+reset_test_state
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan pip "$multi_gfxes" "${multi_requirement}"$'\r'
+assert_fails "pip rejects a carriage-return artifact record before virtual-environment mutation" install_rocm_pip
+assert_eq '' "$RECORDED_COMMANDS" "carriage-return pip artifact record runs no commands"
 
 tarball_temp_dir="${TEST_TEMP_ROOT}/tarball-work"
 tarball_stage_dir="${tarball_temp_dir}/staging"
 tarball_backup_dir="${tarball_temp_dir}/previous-rocm-7.14.0"
+mktemp_call_count_file="${TEST_TEMP_ROOT}/mktemp-call-count"
+reset_mktemp_call_count() {
+    printf '0\n' > "$mktemp_call_count_file"
+}
+
+mktemp_call_count() {
+    local count
+
+    count=$(<"$mktemp_call_count_file")
+    printf '%s\n' "$count"
+}
+
 mktemp() {
+    local count
+
     [[ "$1" == -d ]] || return 1
+    count=$(<"$mktemp_call_count_file")
+    printf '%s\n' "$((count + 1))" > "$mktemp_call_count_file"
     printf '%s\n' "$tarball_temp_dir"
 }
 
 reset_test_state
-tarball_artifact=$(resolve_tarball_artifact gfx942)
-set_artifact_plan ubuntu2404 "$tarball_artifact"
-assert_success "tarball installation stages the explicit reviewed artifact" install_rocm_tarball
+reset_mktemp_call_count
+tarball_artifact=$ROCM_MULTIARCH_TARBALL_ARTIFACT
+set_installer_plan tarball "$multi_gfxes" "$tarball_artifact"
+assert_success "tarball installation stages the one reviewed multiarch artifact" install_rocm_tarball
 assert_contains "$RECORDED_COMMANDS" "${ROCM_TARBALL_ROOT}${tarball_artifact}" "tarball download uses the explicit artifact URL"
 assert_contains "$RECORDED_COMMANDS" "tar -xzf ${tarball_temp_dir}/${tarball_artifact}" "tarball extraction uses the downloaded artifact"
 assert_contains "$RECORDED_COMMANDS" "-C ${tarball_stage_dir}" "tarball extraction targets only temporary staging"
 assert_command_before "tar -xzf" "mv ${tarball_stage_dir} /opt/rocm-7.14.0" "$RECORDED_COMMANDS" "tarball promotes staging only after extraction"
 assert_command_before "mv ${tarball_stage_dir} /opt/rocm-7.14.0" "ln -sfn /opt/rocm-7.14.0 /opt/rocm" "$RECORDED_COMMANDS" "tarball updates the active link only after promotion"
 assert_contains "$RECORDED_COMMANDS" "rm -rf ${tarball_temp_dir}" "tarball cleanup removes the temporary directory"
+assert_recorded_command_count "1" "curl -fL --retry 0 --output" "$RECORDED_COMMANDS" "tarball downloads one multiarch archive"
+assert_recorded_command_count "1" "tar -xzf" "$RECORDED_COMMANDS" "tarball extracts one multiarch archive"
+assert_not_contains "$RECORDED_COMMANDS" 'therock-dist-linux-gfx1151' "tarball does not download a per-GFX archive"
+assert_not_contains "$RECORDED_COMMANDS" 'therock-dist-linux-gfx120X-all' "tarball does not download a GFX-family archive"
+assert_eq "1" "$(mktemp_call_count)" "tarball creates one staging directory for the one multiarch archive"
+
+reset_test_state
+reset_mktemp_call_count
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan tarball "$multi_gfxes" $'therock-dist-linux-multiarch-7.14.0.tar.gz\ntherock-dist-linux-gfx1151-7.14.0.tar.gz'
+assert_fails "tarball rejects multiple artifact records before staging mutation" install_rocm_tarball
+assert_eq '' "$RECORDED_COMMANDS" "multiple tarball artifact records run no commands"
+assert_eq "0" "$(mktemp_call_count)" "multiple tarball artifact records do not create staging"
+
+reset_test_state
+reset_mktemp_call_count
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan tarball "$multi_gfxes" $'\t'
+assert_fails "tarball rejects a blank artifact record before staging mutation" install_rocm_tarball
+assert_eq '' "$RECORDED_COMMANDS" "blank tarball artifact record runs no commands"
+assert_eq "0" "$(mktemp_call_count)" "blank tarball artifact record does not create staging"
+
+reset_test_state
+reset_mktemp_call_count
+run_cmd() { recording_run_cmd "$@"; }
+set_installer_plan tarball "$multi_gfxes" "${tarball_artifact}"$'\r'
+assert_fails "tarball rejects a carriage-return artifact record before staging mutation" install_rocm_tarball
+assert_eq '' "$RECORDED_COMMANDS" "carriage-return tarball artifact record runs no commands"
+assert_eq "0" "$(mktemp_call_count)" "carriage-return tarball artifact record does not create staging"
 
 tarball_extract_fails() {
     recording_run_cmd "$@"
@@ -198,7 +500,7 @@ tarball_extract_fails() {
 }
 
 reset_test_state
-set_artifact_plan ubuntu2404 "$tarball_artifact"
+set_installer_plan tarball "$multi_gfxes" "$tarball_artifact"
 run_cmd() { tarball_extract_fails "$@"; }
 assert_status 23 "tarball extraction failure propagates its exact status" install_rocm_tarball
 assert_not_contains "$RECORDED_COMMANDS" "mv ${tarball_stage_dir} /opt/rocm-7.14.0" "tarball extraction failure leaves the prior final root untouched"
@@ -216,7 +518,7 @@ tarball_move_fails() {
 }
 
 reset_test_state
-set_artifact_plan ubuntu2404 "$tarball_artifact"
+set_installer_plan tarball "$multi_gfxes" "$tarball_artifact"
 run_cmd() { tarball_move_fails "$@"; }
 assert_status 23 "tarball promotion failure propagates its exact status" install_rocm_tarball
 assert_command_before "mv /opt/rocm-7.14.0 ${tarball_backup_dir}" "mv ${tarball_stage_dir} /opt/rocm-7.14.0" "$RECORDED_COMMANDS" "tarball saves the prior root before promotion"
@@ -235,7 +537,7 @@ tarball_symlink_fails_with_existing_root() {
 }
 
 reset_test_state
-set_artifact_plan ubuntu2404 "$tarball_artifact"
+set_installer_plan tarball "$multi_gfxes" "$tarball_artifact"
 run_cmd() { tarball_symlink_fails_with_existing_root "$@"; }
 assert_status 23 "symlink activation failure preserves its original status after rollback" install_rocm_tarball
 assert_command_before "ln -sfn /opt/rocm-7.14.0 /opt/rocm" "rm -rf /opt/rocm-7.14.0" "$RECORDED_COMMANDS" "symlink failure removes the newly promoted root"
@@ -253,7 +555,7 @@ tarball_symlink_fails_without_existing_root() {
 }
 
 reset_test_state
-set_artifact_plan ubuntu2404 "$tarball_artifact"
+set_installer_plan tarball "$multi_gfxes" "$tarball_artifact"
 run_cmd() { tarball_symlink_fails_without_existing_root "$@"; }
 assert_status 23 "symlink activation failure preserves its original status without a prior root" install_rocm_tarball
 assert_contains "$RECORDED_COMMANDS" "rm -rf /opt/rocm-7.14.0" "symlink failure without a prior root removes the new root"
@@ -275,7 +577,7 @@ tarball_symlink_rollback_fails() {
 }
 
 reset_test_state
-set_artifact_plan ubuntu2404 "$tarball_artifact"
+set_installer_plan tarball "$multi_gfxes" "$tarball_artifact"
 run_cmd() { tarball_symlink_rollback_fails "$@"; }
 assert_status 41 "failed prior-root restoration reports the rollback failure" install_rocm_tarball
 assert_contains "$RECORDED_COMMANDS" "mv ${tarball_backup_dir} /opt/rocm-7.14.0" "failed rollback attempts to restore the prior root"
