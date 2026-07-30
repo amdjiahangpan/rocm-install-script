@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2034
+# shellcheck disable=SC1091,SC2034,SC2317
 set -euo pipefail
 # shellcheck source=test_helpers.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
@@ -38,6 +38,19 @@ step_ssh_config() { record_step ssh; }
 step_configure_env() { record_step environment; }
 verify_installation() { record_step verify; }
 
+capture_main_output() {
+    local output_file=${TEST_TEMP_ROOT}/main-output status
+
+    if main "$@" 2>"$output_file"; then
+        MAIN_OUTPUT=$(<"$output_file")
+        return 0
+    else
+        status=$?
+        MAIN_OUTPUT=$(<"$output_file")
+        return "$status"
+    fi
+}
+
 assert_success "auto driver mode resolves to inbox" main --gpu-arch gfx1151 --non-interactive --skip-reboot
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\ndriver:inbox\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "main migrates the driver before prerequisites"
 FLOW=""
@@ -54,6 +67,77 @@ assert_success "verify-only normalizes repeated GPU architectures" main --verify
 assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "verify-only normalizes GPU architectures before verification"
 assert_eq "0" "${#INSTALL_PLAN[@]}" "verify-only does not create an install plan"
 assert_eq $'root\nsystem\ngpu:gfx1151,gfx1201\nverify' "${FLOW%$'\n'}" "verify-only runs no planning or mutation lifecycle steps"
+
+require_root() { record_step root; return 23; }
+FLOW=""
+assert_status 23 "root preflight preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "root privilege" "root preflight identifies the failed stage"
+assert_contains "$MAIN_OUTPUT" "sudo" "root preflight tells users how to proceed"
+assert_eq "root" "${FLOW%$'\n'}" "root preflight runs no later stage"
+
+require_root() { record_step root; }
+detect_system() { record_step system; OS_ID=debian; OS_VERSION=13; ARCH=x86_64; KERNEL_VERSION=6.17.0-generic; return 29; }
+FLOW=""
+assert_status 29 "system detection preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "system detection" "system detection identifies the failed stage"
+assert_contains "$MAIN_OUTPUT" "Ubuntu/x86_64" "system detection tells users the supported host"
+assert_contains "$MAIN_OUTPUT" "os=debian-13" "system detection reports detected host context"
+assert_eq $'root\nsystem' "${FLOW%$'\n'}" "system detection runs no mutation stage"
+
+detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=6.17.0-generic; }
+resolve_gpu_identity() { record_step gpu; return 31; }
+FLOW=""
+assert_status 31 "GPU preflight preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "GPU/KFD" "GPU preflight identifies the failed stage"
+assert_contains "$MAIN_OUTPUT" "--gpu-arch" "GPU preflight tells users how to proceed"
+assert_eq $'root\nsystem\ngpu' "${FLOW%$'\n'}" "GPU preflight runs no mutation stage"
+
+resolve_gpu_identity() {
+    [[ $# -eq 0 ]] || return 64
+    GPU_ARCHES=$(normalize_gfxes "$GPU_ARCHES") || return $?
+    GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'
+    record_step "gpu:$(records_to_csv "$GPU_ARCHES")"
+}
+resolve_install_plan() { record_step plan; return 37; }
+FLOW=""
+assert_status 37 "plan validation preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "installation plan validation" "plan validation identifies the failed stage"
+assert_contains "$MAIN_OUTPUT" "os=ubuntu-24.04" "plan validation reports operating-system context"
+assert_contains "$MAIN_OUTPUT" "kernel=6.17.0-generic" "plan validation reports kernel context"
+assert_contains "$MAIN_OUTPUT" "driver=auto" "plan validation reports driver context"
+assert_contains "$MAIN_OUTPUT" "gfx=gfx1151" "plan validation reports GPU context"
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan' "${FLOW%$'\n'}" "plan validation runs no mutation stage"
+
+resolve_install_plan() {
+    local artifacts
+
+    artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$GPU_ARCHES") || return $?
+    INSTALL_PLAN=(
+        [gfxes]="$GPU_ARCHES"
+        [os_key]=ubuntu-24.04.4
+        [repo_slug]=ubuntu2404
+        [method]="$INSTALL_METHOD"
+        [artifacts]="$artifacts"
+        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE")"
+        [product_names]="$GPU_PRODUCT_NAMES"
+    )
+    record_step plan
+}
+print_install_plan() { record_step print-plan; return 41; }
+FLOW=""
+assert_status 41 "plan rendering preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "installation plan rendering" "plan rendering identifies the failed stage"
+assert_contains "$MAIN_OUTPUT" "output destination" "plan rendering tells users how to proceed"
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan' "${FLOW%$'\n'}" "plan rendering runs no mutation stage"
+
+print_install_plan() { record_step print-plan; }
+confirm_install_plan() { record_step confirm; return 43; }
+FLOW=""
+assert_status 43 "installation confirmation preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "installation confirmation" "installation confirmation identifies the failed stage"
+assert_contains "$MAIN_OUTPUT" "cancelled" "installation confirmation tells users it was cancelled"
+assert_contains "$MAIN_OUTPUT" "--non-interactive" "installation confirmation tells users how to bypass prompts"
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm' "${FLOW%$'\n'}" "installation confirmation runs no mutation stage"
 
 MOCK_DKMS_PACKAGE_VERSION=''
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
