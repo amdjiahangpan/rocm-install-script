@@ -17,6 +17,7 @@ ROCM_MULTIARCH_TARBALL_ARTIFACT=therock-dist-linux-multiarch-7.14.0.tar.gz
 AMDGPU_REPOSITORY=https://repo.radeon.com/amdgpu/${AMDGPU_RELEASE}/ubuntu
 AMDGPU_GPG_KEY_URL=https://repo.radeon.com/rocm/rocm.gpg.key
 SUPPORTED_OS_KEYS=ubuntu-24.04.4,ubuntu-26.04
+KERNEL_MIN_FREE_KIB=524288
 
 ARTIFACT_DATA='gfx950|gfx950|device-gfx950|therock-dist-linux-gfx950-dcgpu-7.14.0.tar.gz
 gfx942|gfx942|device-gfx942|therock-dist-linux-gfx94X-dcgpu-7.14.0.tar.gz
@@ -185,32 +186,71 @@ is_supported_gpu_arch() {
     validate_artifact_gfx "${1:-}"
 }
 
+is_ryzen_scoped_gfx() {
+    case "${1:-}" in
+        gfx1103|gfx1150|gfx1151|gfx1152|gfx1153) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 kernel_policy_for() {
-    local driver_mode=${1:-} os_key=${2:-}
+    local driver_mode=${1:-} os_key=${2:-} gfxes=${3:-} normalized_gfxes gfx
+    local has_ryzen_gfx=false has_non_ryzen_gfx=false
+
+    [[ $# -eq 3 ]] || return 1
+    normalized_gfxes=$(normalize_gfxes "$gfxes") || return 1
+    [[ "$gfxes" == "$normalized_gfxes" ]] || return 1
+    while IFS= read -r gfx || [[ -n "$gfx" ]]; do
+        if is_ryzen_scoped_gfx "$gfx"; then
+            has_ryzen_gfx=true
+        else
+            has_non_ryzen_gfx=true
+        fi
+    done <<< "$normalized_gfxes"
+
+    case "$os_key" in
+        ubuntu-24.04.4)
+            if [[ "$has_ryzen_gfx" == true ]]; then
+                [[ "$has_non_ryzen_gfx" == false && "$driver_mode" == inbox ]] || return 1
+                printf '%s\n' '6.14.*-oem|linux-oem-6.14'
+            else
+                case "$driver_mode" in
+                    inbox|dkms) printf '%s\n' '6.8.*-generic|linux-generic' ;;
+                    *) return 1 ;;
+                esac
+            fi
+            ;;
+        ubuntu-26.04)
+            case "$driver_mode" in
+                inbox|dkms) printf '%s\n' '7.0.*-generic|linux-generic-7.0' ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+kernel_release_matches_target() {
+    local kernel_target=${1:-} kernel_release=${2:-}
 
     [[ $# -eq 2 ]] || return 1
-    case "$driver_mode|$os_key" in
-        inbox\|ubuntu-24.04.4) printf '%s\n' ubuntu-hwe-6.17 ;;
-        dkms\|ubuntu-24.04.4) printf '%s\n' ubuntu-ga-6.8 ;;
-        inbox\|ubuntu-26.04|dkms\|ubuntu-26.04) printf '%s\n' ubuntu-ga-7.0 ;;
+    case "$kernel_target" in
+        '6.14.*-oem') [[ "$kernel_release" =~ ^6\.14\.[0-9]+(-[[:alnum:].+_]+)*-oem$ ]] ;;
+        '6.8.*-generic') [[ "$kernel_release" =~ ^6\.8\.[0-9]+(-[[:alnum:].+_]+)*-generic$ ]] ;;
+        '7.0.*-generic') [[ "$kernel_release" =~ ^7\.0\.[0-9]+(-[[:alnum:].+_]+)*-generic$ ]] ;;
         *) return 1 ;;
     esac
 }
 
 validate_ubuntu_kernel() {
-    local driver_mode=${1:-} os_key=${2:-} kernel_release=${3:-} policy expected actual
+    local driver_mode=${1:-} os_key=${2:-} kernel_release=${3:-} gfxes=${4:-}
+    local kernel_policy kernel_target kernel_package
 
-    [[ $# -eq 3 ]] || return 1
-    policy=$(kernel_policy_for "$driver_mode" "$os_key") || return 1
-    [[ "$kernel_release" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+([[:alnum:].+_-]*)$ ]] || return 1
-    actual="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-    case "$policy" in
-        ubuntu-hwe-6.17) expected=6.17 ;;
-        ubuntu-ga-6.8) expected=6.8 ;;
-        ubuntu-ga-7.0) expected=7.0 ;;
-        *) return 1 ;;
-    esac
-    [[ "$actual" == "$expected" ]]
+    [[ $# -eq 4 ]] || return 1
+    kernel_policy=$(kernel_policy_for "$driver_mode" "$os_key" "$gfxes") || return 1
+    IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
+    [[ -n "$kernel_package" ]] || return 1
+    kernel_release_matches_target "$kernel_target" "$kernel_release"
 }
 
 resolve_driver_mode() {
@@ -384,7 +424,7 @@ resolve_gpu_identity() {
 }
 
 install_plan_keys() {
-    printf '%s\n' gfxes os_key repo_slug method artifacts driver_mode
+    printf '%s\n' gfxes os_key repo_slug method artifacts driver_mode kernel_status kernel_target kernel_package
 }
 
 reset_install_plan() {
@@ -411,12 +451,12 @@ resolve_plan_artifacts() {
 
 validate_install_plan() {
     local key gfxes normalized_gfxes os_key os_record repo_slug
-    local expected_artifacts expected_driver normalized_product_names
+    local expected_artifacts expected_driver normalized_product_names kernel_policy kernel_target kernel_package kernel_status
 
-    [[ ${#INSTALL_PLAN[@]} -eq 6 || ${#INSTALL_PLAN[@]} -eq 7 ]] || return 1
+    [[ ${#INSTALL_PLAN[@]} -eq 9 || ${#INSTALL_PLAN[@]} -eq 10 ]] || return 1
     for key in "${!INSTALL_PLAN[@]}"; do
         case "$key" in
-            gfxes|os_key|repo_slug|method|artifacts|driver_mode|product_names) ;;
+            gfxes|os_key|repo_slug|method|artifacts|driver_mode|kernel_status|kernel_target|kernel_package|product_names) ;;
             *) return 1 ;;
         esac
     done
@@ -434,6 +474,12 @@ validate_install_plan() {
     [[ "${INSTALL_PLAN[artifacts]}" == "$expected_artifacts" ]] || return 1
     expected_driver=$(resolve_driver_mode "${DRIVER_MODE:-}") || return 1
     [[ "${INSTALL_PLAN[driver_mode]}" == "$expected_driver" ]] || return 1
+    kernel_policy=$(kernel_policy_for "${INSTALL_PLAN[driver_mode]}" "$os_key" "$gfxes") || return 1
+    IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
+    [[ "${INSTALL_PLAN[kernel_target]}" == "$kernel_target" ]] || return 1
+    [[ "${INSTALL_PLAN[kernel_package]}" == "$kernel_package" ]] || return 1
+    kernel_status=$(resolve_kernel_status "$kernel_target" "$kernel_package" "${KERNEL_VERSION:-}") || return $?
+    [[ "${INSTALL_PLAN[kernel_status]}" == "$kernel_status" ]] || return 1
     if [[ -v 'INSTALL_PLAN[product_names]' ]]; then
         normalized_product_names=$(normalize_records "${INSTALL_PLAN[product_names]}") || return 1
         [[ "${INSTALL_PLAN[product_names]}" == "$normalized_product_names" ]] || return 1
@@ -442,6 +488,7 @@ validate_install_plan() {
 
 resolve_install_plan() {
     local os_key os_record repo_slug artifacts driver_mode normalized_gfxes
+    local kernel_policy kernel_target kernel_package kernel_status
     local normalized_product_names=''
 
     reset_install_plan
@@ -459,9 +506,9 @@ resolve_install_plan() {
         [[ "$GPU_PRODUCT_NAMES" == "$normalized_product_names" ]] || return 1
     fi
     driver_mode=$(resolve_driver_mode "$DRIVER_MODE") || return 1
-    if [[ -n ${KERNEL_VERSION:-} ]]; then
-        validate_ubuntu_kernel "$driver_mode" "$os_key" "$KERNEL_VERSION" || return 1
-    fi
+    kernel_policy=$(kernel_policy_for "$driver_mode" "$os_key" "$normalized_gfxes") || return 1
+    IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
+    kernel_status=$(resolve_kernel_status "$kernel_target" "$kernel_package" "${KERNEL_VERSION:-}") || return $?
     os_record=$(resolve_os_record "$os_key") || return 1
     repo_slug=${os_record#*|}
     artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$normalized_gfxes") || return 1
@@ -472,6 +519,9 @@ resolve_install_plan() {
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
         [driver_mode]="$driver_mode"
+        [kernel_status]="$kernel_status"
+        [kernel_target]="$kernel_target"
+        [kernel_package]="$kernel_package"
     )
     [[ -z "$normalized_product_names" ]] || INSTALL_PLAN[product_names]=$normalized_product_names
     if validate_install_plan; then
@@ -493,6 +543,9 @@ print_install_plan() {
     output+="method=${INSTALL_PLAN[method]}"$'\n'
     output+="artifact=${artifact_csv}"$'\n'
     output+="driver_mode=${INSTALL_PLAN[driver_mode]}"$'\n'
+    output+="kernel_status=${INSTALL_PLAN[kernel_status]}"$'\n'
+    output+="kernel_target=${INSTALL_PLAN[kernel_target]}"$'\n'
+    output+="kernel_package=${INSTALL_PLAN[kernel_package]}"$'\n'
     if [[ -v 'INSTALL_PLAN[product_names]' ]]; then
         product_name_csv=$(records_to_csv "${INSTALL_PLAN[product_names]}") || return 1
         output+="product_name=${product_name_csv}"$'\n'
@@ -566,6 +619,126 @@ run_cmd() {
 
 capture_cmd() {
     "$@"
+}
+
+kernel_package_is_installed() {
+    local package=${1:-} package_status
+
+    [[ $# -eq 1 && -n "$package" ]] || return 1
+    package_status=$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null) || return 1
+    [[ "$package_status" == installed ]]
+}
+
+approved_kernel_spec_is_valid() {
+    local kernel_target=${1:-} kernel_package=${2:-}
+
+    [[ $# -eq 2 ]] || return 1
+    case "$kernel_target|$kernel_package" in
+        '6.14.*-oem|linux-oem-6.14'|'6.8.*-generic|linux-generic'|'7.0.*-generic|linux-generic-7.0') ;;
+        *) return 1 ;;
+    esac
+}
+
+kernel_package_has_candidate() {
+    local package=${1:-} policy_output line candidate='' candidate_count=0
+
+    [[ $# -eq 1 && -n "$package" ]] || return 1
+    policy_output=$(capture_cmd env LC_ALL=C apt-cache policy "$package") || return $?
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*Candidate: ]] || continue
+        candidate_count=$((candidate_count + 1))
+        [[ "$line" =~ ^[[:space:]]*Candidate:[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]] || return 1
+        candidate=${BASH_REMATCH[1]}
+    done <<< "$policy_output"
+    [[ $candidate_count -eq 1 && "$candidate" != '(none)' ]]
+}
+
+kernel_install_simulation_is_safe() {
+    local package=${1:-} simulation_output line
+
+    [[ $# -eq 1 && -n "$package" ]] || return 1
+    simulation_output=$(capture_cmd env LC_ALL=C apt-get --simulate --no-remove --install-recommends install "$package") || return $?
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ ! "$line" =~ ^[[:space:]]*Remv[[:space:]] ]] || return 1
+    done <<< "$simulation_output"
+}
+
+kernel_boot_image_exists() {
+    local kernel_target=${1:-} boot_dir=${KERNEL_BOOT_DIR:-/boot} image pattern
+
+    [[ $# -eq 1 && -d "$boot_dir" ]] || return 1
+    case "$kernel_target" in
+        '6.14.*-oem') pattern='vmlinuz-6.14.*-oem' ;;
+        '6.8.*-generic') pattern='vmlinuz-6.8.*-generic' ;;
+        '7.0.*-generic') pattern='vmlinuz-7.0.*-generic' ;;
+        *) return 1 ;;
+    esac
+    for image in "$boot_dir"/$pattern; do
+        [[ -f "$image" && -r "$image" && -s "$image" ]] && return 0
+    done
+    return 1
+}
+
+resolve_kernel_status() {
+    local kernel_target=${1:-} kernel_package=${2:-} kernel_release=${3:-}
+
+    [[ $# -eq 3 ]] || return 1
+    approved_kernel_spec_is_valid "$kernel_target" "$kernel_package" || return 1
+    if kernel_release_matches_target "$kernel_target" "$kernel_release"; then
+        printf '%s\n' ready
+    elif kernel_package_is_installed "$kernel_package" && kernel_boot_image_exists "$kernel_target"; then
+        printf '%s\n' reboot-required
+    else
+        printf '%s\n' install-required
+    fi
+}
+
+kernel_boot_has_minimum_free_space() {
+    local boot_dir=${KERNEL_BOOT_DIR:-/boot} df_output header data_line
+    local filesystem blocks used available capacity mount_point extra
+    local header_filesystem header_blocks header_used header_available header_capacity header_mounted header_on header_extra
+    local -a df_lines=()
+
+    [[ -d "$boot_dir" ]] || return 1
+    df_output=$(capture_cmd env LC_ALL=C df -Pk "$boot_dir") || return $?
+    while IFS= read -r data_line || [[ -n "$data_line" ]]; do
+        df_lines+=("$data_line")
+    done <<< "$df_output"
+    [[ ${#df_lines[@]} -eq 2 ]] || return 1
+    header=${df_lines[0]}
+    data_line=${df_lines[1]}
+    read -r header_filesystem header_blocks header_used header_available header_capacity header_mounted header_on header_extra <<< "$header"
+    [[ "$header_filesystem" == Filesystem && "$header_blocks" == 1024-blocks && "$header_used" == Used && "$header_available" == Available && "$header_capacity" == Capacity && "$header_mounted" == Mounted && "$header_on" == on && -z "$header_extra" ]] || return 1
+    read -r filesystem blocks used available capacity mount_point extra <<< "$data_line"
+    [[ -n "$filesystem" && "$blocks" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+$ && "$available" =~ ^[0-9]+$ && "$capacity" =~ ^[0-9]+%$ && -n "$mount_point" && -z "$extra" ]] || return 1
+    ((10#$available >= KERNEL_MIN_FREE_KIB))
+}
+
+install_approved_kernel() {
+    local kernel_target=${INSTALL_PLAN[kernel_target]:-} kernel_package=${INSTALL_PLAN[kernel_package]:-}
+
+    approved_kernel_spec_is_valid "$kernel_target" "$kernel_package" || return 1
+    kernel_boot_has_minimum_free_space || return $?
+    run_cmd apt-get update || return $?
+    kernel_package_has_candidate "$kernel_package" || return $?
+    kernel_install_simulation_is_safe "$kernel_package" || return $?
+    run_cmd apt-get --yes --no-remove --install-recommends install "$kernel_package" || return $?
+    kernel_package_is_installed "$kernel_package" || return 1
+    kernel_boot_image_exists "$kernel_target"
+}
+
+prepare_approved_kernel() {
+    local kernel_status=${INSTALL_PLAN[kernel_status]:-}
+
+    case "$kernel_status" in
+        ready) return 0 ;;
+        install-required)
+            install_approved_kernel || return $?
+            REBOOT_REQUIRED=true
+            ;;
+        reboot-required) REBOOT_REQUIRED=true ;;
+        *) return 1 ;;
+    esac
 }
 
 write_managed_file() {
@@ -1292,6 +1465,12 @@ main() {
         preflight_error 'installation confirmation' 'installation was cancelled; re-run with --non-interactive if appropriate.'
         return "$status"
     }
+    validate_install_plan || return $?
+    prepare_approved_kernel || return $?
+    if [[ "${INSTALL_PLAN[kernel_status]}" != ready ]]; then
+        handle_reboot
+        return $?
+    fi
     step_install_driver || return $?
     step_prerequisites || return $?
     step_install_rocm || return $?

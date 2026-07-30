@@ -70,19 +70,21 @@ assert_command_output_eq "therock-dist-linux-gfx1151-7.14.0.tar.gz" "single-GFX 
 assert_fails "plan artifact composition rejects an unknown method" resolve_plan_artifacts runfile "$multi_gfxes"
 assert_fails "APT plan composition rejects a nonnormalized GFX collection" resolve_plan_artifacts apt $'gfx1201\ngfx1151'
 
-assert_eq $'gfxes\nos_key\nrepo_slug\nmethod\nartifacts\ndriver_mode' "$(install_plan_keys)" "install plan required keys are plural and fixed"
+assert_eq $'gfxes\nos_key\nrepo_slug\nmethod\nartifacts\ndriver_mode\nkernel_status\nkernel_target\nkernel_package' "$(install_plan_keys)" "install plan includes its resolved kernel preparation fields"
 assert_command_output_eq 'AMD Radeon Graphics' "plain CSV records stay unquoted" records_to_csv 'AMD Radeon Graphics'
 assert_command_output_eq '"AMD Radeon, Pro"' "CSV records containing commas are quoted" records_to_csv 'AMD Radeon, Pro'
 assert_command_output_eq '"AMD ""Radeon"" Pro"' "CSV records containing quotes are quoted and escaped" records_to_csv 'AMD "Radeon" Pro'
 
 set_valid_install_plan() {
-    local method=$1 gfxes=$2 product_names=${3:-} artifacts
+    local method=$1 gfxes=$2 product_names=${3:-} artifacts kernel_policy kernel_target kernel_package
 
     if artifacts=$(resolve_plan_artifacts "$method" "$gfxes"); then
         :
     else
         fail "valid install plan fixture could not resolve ${method} artifacts"
     fi
+    kernel_policy=$(kernel_policy_for inbox ubuntu-24.04.4 "$gfxes") || fail "valid install plan fixture could not resolve kernel policy"
+    IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
     INSTALL_PLAN=(
         [gfxes]="$gfxes"
         [os_key]=ubuntu-24.04.4
@@ -90,67 +92,76 @@ set_valid_install_plan() {
         [method]="$method"
         [artifacts]="$artifacts"
         [driver_mode]=inbox
+        [kernel_status]=install-required
+        [kernel_target]="$kernel_target"
+        [kernel_package]="$kernel_package"
     )
     [[ $# -eq 2 ]] || INSTALL_PLAN[product_names]=$product_names
 }
 
-set_valid_install_plan apt "$multi_gfxes" $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700'
+valid_plan_gfxes=$'gfx1200\ngfx1201'
+valid_plan_packages=$'amdrocm-core-sdk7.14-gfx1200\namdrocm-core-sdk7.14-gfx1201'
+
+set_valid_install_plan apt "$valid_plan_gfxes" $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700'
 assert_success "normalized plural install plan validates" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 # shellcheck disable=SC2154
 INSTALL_PLAN[unknown]=value
 assert_fails "install plan rejects unknown keys" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 unset 'INSTALL_PLAN[artifacts]'
 assert_fails "install plan rejects missing required keys" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 INSTALL_PLAN[gfx]=gfx1151
 assert_fails "install plan rejects legacy scalar GFX keys" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 INSTALL_PLAN[gfxes]=$'gfx1201\ngfx1151'
 assert_fails "install plan rejects unsorted GFX records" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 INSTALL_PLAN[gfxes]=$'gfx1151\ngfx1151'
 assert_fails "install plan rejects duplicate GFX records" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 INSTALL_PLAN[gfxes]=$'gfx1151\ngfx9999'
 assert_fails "install plan rejects unsupported GFX records" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 INSTALL_PLAN[artifacts]=amdrocm-core-sdk7.14-gfx1151
 assert_fails "install plan rejects method-specific artifact mismatches" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 INSTALL_PLAN[artifacts]=$'amdrocm-core-sdk7.14-gfx1201\namdrocm-core-sdk7.14-gfx1151'
 assert_fails "install plan rejects reversed valid APT artifact records byte-for-byte" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 INSTALL_PLAN[repo_slug]=ubuntu2604
 assert_fails "install plan rejects a repository that mismatches the OS" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 INSTALL_PLAN[driver_mode]=auto
 assert_fails "install plan rejects unresolved driver modes" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes"
+set_valid_install_plan apt "$valid_plan_gfxes"
 DRIVER_MODE=auto
 INSTALL_PLAN[driver_mode]=dkms
 assert_fails "install plan rejects a driver mode that mismatches the requested global mode" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes" $'AMD Radeon AI PRO R9700\nAMD Radeon 8060S Graphics'
+set_valid_install_plan apt "$valid_plan_gfxes" $'AMD Radeon AI PRO R9700\nAMD Radeon 8060S Graphics'
 assert_fails "install plan rejects unsorted product-name records" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes" $'AMD Radeon 8060S Graphics\nAMD Radeon 8060S Graphics'
+set_valid_install_plan apt "$valid_plan_gfxes" $'AMD Radeon 8060S Graphics\nAMD Radeon 8060S Graphics'
 assert_fails "install plan rejects duplicate product-name records" validate_install_plan
 
-set_valid_install_plan apt "$multi_gfxes" ''
+set_valid_install_plan apt "$valid_plan_gfxes" ''
 assert_fails "install plan rejects an empty optional product-name collection" validate_install_plan
+
+MOCK_KERNEL_METAPACKAGE_INSTALLED=false
+kernel_package_is_installed() { [[ "$MOCK_KERNEL_METAPACKAGE_INSTALLED" == true ]]; }
 
 OS_ID=ubuntu
 OS_VERSION=24.04
@@ -163,29 +174,54 @@ DKMS_CLEANUP_POLICY=auto
 ROOT_PASSWORD=''
 INSTALL_METHOD=apt
 DRIVER_MODE=auto
-GPU_ARCHES=$multi_gfxes
+GPU_ARCHES=$valid_plan_gfxes
 GPU_PRODUCT_NAMES=$'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700'
 assert_success "install plan resolves from normalized GPU identity collections" resolve_install_plan
-assert_eq "$multi_gfxes" "${INSTALL_PLAN[gfxes]}" "resolved plan retains normalized GFX records"
-assert_eq "$multi_packages" "${INSTALL_PLAN[artifacts]}" "resolved APT plan retains one package per GFX"
+assert_eq "$valid_plan_gfxes" "${INSTALL_PLAN[gfxes]}" "resolved plan retains normalized GFX records"
+assert_eq "$valid_plan_packages" "${INSTALL_PLAN[artifacts]}" "resolved APT plan retains one package per GFX"
 assert_eq "$GPU_PRODUCT_NAMES" "${INSTALL_PLAN[product_names]}" "resolved plan retains normalized product-name records"
-assert_eq "7" "${#INSTALL_PLAN[@]}" "resolved plan contains only required keys and optional product names"
+assert_eq "10" "${#INSTALL_PLAN[@]}" "resolved plan contains kernel fields and optional product names"
+assert_eq install-required "${INSTALL_PLAN[kernel_status]}" "mismatched or unavailable kernel metapackage requires installation"
+assert_eq '6.8.*-generic' "${INSTALL_PLAN[kernel_target]}" "non-Ryzen Ubuntu 24 plan records the generic target"
+assert_eq linux-generic "${INSTALL_PLAN[kernel_package]}" "non-Ryzen Ubuntu 24 plan records the generic metapackage"
 
-expected_multi_plan=$'INSTALL PLAN\ngfx=gfx1151,gfx1201\nos=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1151,amdrocm-core-sdk7.14-gfx1201\ndriver_mode=inbox\nproduct_name=AMD Radeon 8060S Graphics,AMD Radeon AI PRO R9700'
+expected_multi_plan=$'INSTALL PLAN\ngfx=gfx1200,gfx1201\nos=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1200,amdrocm-core-sdk7.14-gfx1201\ndriver_mode=inbox\nkernel_status=install-required\nkernel_target=6.8.*-generic\nkernel_package=linux-generic\nproduct_name=AMD Radeon 8060S Graphics,AMD Radeon AI PRO R9700'
 assert_command_output_eq "$expected_multi_plan" "multi-GFX install plan rendering is exact and omits repository internals" print_install_plan
 
-set_valid_install_plan pip "$multi_gfxes"
-expected_pip_plan=$'INSTALL PLAN\ngfx=gfx1151,gfx1201\nos=ubuntu-24.04.4\nmethod=pip\nartifact="rocm[libraries,device-gfx1151,device-gfx1201]==7.14.0"\ndriver_mode=inbox'
+GPU_ARCHES=gfx1151
+GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'
+KERNEL_VERSION=6.14.0-1020-oem
+MOCK_KERNEL_METAPACKAGE_INSTALLED=false
+assert_success "matching Ryzen OEM kernel resolves a ready plan" resolve_install_plan
+assert_eq ready "${INSTALL_PLAN[kernel_status]}" "matching uname is ready without a metapackage query"
+assert_eq '6.14.*-oem' "${INSTALL_PLAN[kernel_target]}" "ready Ryzen plan retains the OEM target"
+assert_eq linux-oem-6.14 "${INSTALL_PLAN[kernel_package]}" "ready Ryzen plan retains the OEM metapackage"
+
+KERNEL_VERSION=6.8.0-101-generic
+MOCK_KERNEL_METAPACKAGE_INSTALLED=true
+assert_success "installed target metapackage with a mismatched uname requires reboot" resolve_install_plan
+assert_eq install-required "${INSTALL_PLAN[kernel_status]}" "installed target metapackage without a verified boot image requires installation"
+
+MOCK_KERNEL_METAPACKAGE_INSTALLED=false
+assert_success "missing target metapackage with a mismatched uname requires installation" resolve_install_plan
+assert_eq install-required "${INSTALL_PLAN[kernel_status]}" "missing target metapackage requires installation"
+
+GPU_ARCHES=$valid_plan_gfxes
+GPU_PRODUCT_NAMES=''
+KERNEL_VERSION=''
+
+set_valid_install_plan pip "$valid_plan_gfxes"
+expected_pip_plan=$'INSTALL PLAN\ngfx=gfx1200,gfx1201\nos=ubuntu-24.04.4\nmethod=pip\nartifact="rocm[libraries,device-gfx1200,device-gfx1201]==7.14.0"\ndriver_mode=inbox\nkernel_status=install-required\nkernel_target=6.8.*-generic\nkernel_package=linux-generic'
 assert_command_output_eq "$expected_pip_plan" "pip plan rendering quotes its comma-delimited requirement as one CSV field" print_install_plan
 
 set_valid_install_plan tarball gfx1151
-expected_single_plan=$'INSTALL PLAN\ngfx=gfx1151\nos=ubuntu-24.04.4\nmethod=tarball\nartifact=therock-dist-linux-gfx1151-7.14.0.tar.gz\ndriver_mode=inbox'
+expected_single_plan=$'INSTALL PLAN\ngfx=gfx1151\nos=ubuntu-24.04.4\nmethod=tarball\nartifact=therock-dist-linux-gfx1151-7.14.0.tar.gz\ndriver_mode=inbox\nkernel_status=install-required\nkernel_target=6.14.*-oem\nkernel_package=linux-oem-6.14'
 assert_command_output_eq "$expected_single_plan" "single-GFX install plan rendering stays exact" print_install_plan
 assert_not_contains "$expected_single_plan" "repo_slug" "install plan rendering omits repo_slug"
 assert_not_contains "$expected_single_plan" "product_name" "install plan rendering omits absent optional product names"
 
 set_valid_install_plan apt gfx1151 $'AMD "Creator" Edition\nAMD Radeon, Pro'
-expected_quoted_product_plan=$'INSTALL PLAN\ngfx=gfx1151\nos=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1151\ndriver_mode=inbox\nproduct_name="AMD ""Creator"" Edition","AMD Radeon, Pro"'
+expected_quoted_product_plan=$'INSTALL PLAN\ngfx=gfx1151\nos=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1151\ndriver_mode=inbox\nkernel_status=install-required\nkernel_target=6.14.*-oem\nkernel_package=linux-oem-6.14\nproduct_name="AMD ""Creator"" Edition","AMD Radeon, Pro"'
 assert_command_output_eq "$expected_quoted_product_plan" "product names containing commas and quotes render as valid CSV fields" print_install_plan
 
 print_plan_to_full() {
@@ -197,7 +233,7 @@ assert_fails "plan output errors propagate without product names" print_plan_to_
 set_valid_install_plan apt gfx1151 'AMD Radeon Graphics'
 assert_fails "plan output errors propagate with product names" print_plan_to_full
 
-GPU_ARCHES=$multi_gfxes
+GPU_ARCHES=$valid_plan_gfxes
 GPU_PRODUCT_NAMES=''
 assert_success "a valid plan resolves before stale-state regression" resolve_install_plan
 GPU_ARCHES=$'gfx1151\ngfx9999'
@@ -582,5 +618,212 @@ run_cmd() { tarball_symlink_rollback_fails "$@"; }
 assert_status 41 "failed prior-root restoration reports the rollback failure" install_rocm_tarball
 assert_contains "$RECORDED_COMMANDS" "mv ${tarball_backup_dir} /opt/rocm-7.14.0" "failed rollback attempts to restore the prior root"
 assert_not_contains "$RECORDED_COMMANDS" "rm -rf ${tarball_temp_dir}" "failed rollback preserves the temporary backup for recovery"
+
+KERNEL_BOOT_DIR="${TEST_TEMP_ROOT}/boot"
+KERNEL_CAPTURED_COMMANDS_FILE="${TEST_TEMP_ROOT}/kernel-captured-commands"
+MOCK_KERNEL_CANDIDATE='6.14.0.1020.20'
+MOCK_KERNEL_CANDIDATE_STATUS=0
+MOCK_KERNEL_SIMULATION_OUTPUT='Inst linux-oem-6.14 [6.14.0.1020.20]'
+MOCK_KERNEL_SIMULATION_STATUS=0
+MOCK_KERNEL_UPDATE_STATUS=0
+MOCK_KERNEL_INSTALL_STATUS=0
+MOCK_KERNEL_CREATE_BOOT_IMAGE=true
+MOCK_KERNEL_DF_OUTPUT=$'Filesystem     1024-blocks      Used Available Capacity Mounted on\n/dev/mock 1048576 1 1048575 1% /boot'
+MOCK_KERNEL_DF_STATUS=0
+
+record_kernel_command() {
+    local argument quoted command_line=''
+
+    for argument in "$@"; do
+        printf -v quoted '%q' "$argument"
+        command_line+="${command_line:+ }${quoted}"
+    done
+    printf '%s\n' "$command_line" >> "$KERNEL_CAPTURED_COMMANDS_FILE"
+}
+
+capture_cmd() {
+    record_kernel_command "$@"
+    case "$*" in
+        env\ LC_ALL=C\ df\ -Pk\ *)
+            printf '%s\n' "$MOCK_KERNEL_DF_OUTPUT"
+            return "$MOCK_KERNEL_DF_STATUS"
+            ;;
+        env\ LC_ALL=C\ apt-cache\ policy\ linux-oem-6.14)
+            printf 'Candidate: %s\n' "$MOCK_KERNEL_CANDIDATE"
+            return "$MOCK_KERNEL_CANDIDATE_STATUS"
+            ;;
+        env\ LC_ALL=C\ apt-get\ --simulate\ --no-remove\ --install-recommends\ install\ linux-oem-6.14)
+            printf '%s\n' "$MOCK_KERNEL_SIMULATION_OUTPUT"
+            return "$MOCK_KERNEL_SIMULATION_STATUS"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+run_cmd() {
+    recording_run_cmd "$@" || return $?
+    if [[ "$1 ${2:-}" == 'apt-get update' ]]; then
+        return "$MOCK_KERNEL_UPDATE_STATUS"
+    fi
+    if [[ "$1 ${2:-} ${3:-} ${4:-} ${5:-} ${6:-}" == 'apt-get --yes --no-remove --install-recommends install linux-oem-6.14' ]]; then
+        if [[ "$MOCK_KERNEL_INSTALL_STATUS" -eq 0 ]]; then
+            MOCK_KERNEL_METAPACKAGE_INSTALLED=true
+            if [[ "$MOCK_KERNEL_CREATE_BOOT_IMAGE" == true ]]; then
+                mkdir -p "$KERNEL_BOOT_DIR"
+                printf 'kernel image\n' > "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+            fi
+        fi
+        return "$MOCK_KERNEL_INSTALL_STATUS"
+    fi
+}
+
+set_kernel_install_plan() {
+    INSTALL_PLAN=(
+        [kernel_status]=install-required
+        [kernel_target]='6.14.*-oem'
+        [kernel_package]=linux-oem-6.14
+    )
+}
+
+reset_kernel_install_state() {
+    reset_test_state
+    : > "$KERNEL_CAPTURED_COMMANDS_FILE"
+    MOCK_KERNEL_METAPACKAGE_INSTALLED=false
+    MOCK_KERNEL_CANDIDATE='6.14.0.1020.20'
+    MOCK_KERNEL_CANDIDATE_STATUS=0
+    MOCK_KERNEL_SIMULATION_OUTPUT='Inst linux-oem-6.14 [6.14.0.1020.20]'
+    MOCK_KERNEL_SIMULATION_STATUS=0
+    MOCK_KERNEL_UPDATE_STATUS=0
+    MOCK_KERNEL_INSTALL_STATUS=0
+    MOCK_KERNEL_CREATE_BOOT_IMAGE=true
+    MOCK_KERNEL_DF_OUTPUT=$'Filesystem     1024-blocks      Used Available Capacity Mounted on\n/dev/mock 1048576 1 1048575 1% /boot'
+    MOCK_KERNEL_DF_STATUS=0
+    rm -rf "$KERNEL_BOOT_DIR"
+    mkdir -p "$KERNEL_BOOT_DIR"
+    set_kernel_install_plan
+}
+
+reset_kernel_install_state
+assert_success "approved kernel installation uses the exact official metapackage transaction" install_approved_kernel
+assert_contains "$(<"$KERNEL_CAPTURED_COMMANDS_FILE")" "env LC_ALL=C df -Pk ${KERNEL_BOOT_DIR}" "kernel preparation checks free /boot space with stable POSIX df output"
+assert_contains "$RECORDED_COMMANDS" "apt-get update" "kernel preparation refreshes APT metadata"
+assert_contains "$(<"$KERNEL_CAPTURED_COMMANDS_FILE")" "env LC_ALL=C apt-cache policy linux-oem-6.14" "kernel preparation confirms the exact metapackage candidate in the C locale"
+assert_contains "$(<"$KERNEL_CAPTURED_COMMANDS_FILE")" "env LC_ALL=C apt-get --simulate --no-remove --install-recommends install linux-oem-6.14" "kernel preparation simulates a no-removal transaction in the C locale"
+assert_contains "$RECORDED_COMMANDS" "apt-get --yes --no-remove --install-recommends install linux-oem-6.14" "kernel preparation installs only the approved metapackage with no removals"
+assert_success "kernel preparation verifies the expected OEM boot image" test -e "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+
+reset_kernel_install_state
+assert_success "kernel preparation accepts the real GNU df header spacing" install_approved_kernel
+
+: > "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+assert_fails "an empty matching boot image is not valid for a reboot-required kernel" kernel_boot_image_exists '6.14.*-oem'
+
+rm -f "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+mkdir -p "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+assert_fails "a matching boot-image directory is not valid for a reboot-required kernel" kernel_boot_image_exists '6.14.*-oem'
+
+reset_kernel_install_state
+MOCK_KERNEL_METAPACKAGE_INSTALLED=true
+mkdir -p "$KERNEL_BOOT_DIR"
+printf 'kernel image\n' > "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+assert_eq reboot-required "$(resolve_kernel_status '6.14.*-oem' linux-oem-6.14 6.8.0-101-generic)" "installed metapackage and valid matching image require reboot"
+rm "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+assert_eq install-required "$(resolve_kernel_status '6.14.*-oem' linux-oem-6.14 6.8.0-101-generic)" "installed metapackage without a valid matching image requires repair installation"
+
+OS_ID=ubuntu
+OS_VERSION=24.04
+ARCH=x86_64
+WORKLOAD=compute
+PACKAGE_PROFILE=full
+SKIP_SSH=true
+DKMS_CLEANUP_POLICY=auto
+ROOT_PASSWORD=''
+INSTALL_METHOD=apt
+DRIVER_MODE=auto
+GPU_ARCHES=gfx1151
+GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'
+KERNEL_VERSION=6.8.0-101-generic
+MOCK_KERNEL_METAPACKAGE_INSTALLED=true
+assert_success "kernel plan resolves with an installed metapackage and missing image" resolve_install_plan
+assert_eq install-required "${INSTALL_PLAN[kernel_status]}" "an installed metapackage without an image is not an inconsistent reboot plan"
+INSTALL_PLAN[kernel_status]=reboot-required
+assert_fails "validated plans reject a forged reboot-required status without a valid image" validate_install_plan
+
+reset_kernel_install_state
+MOCK_KERNEL_DF_OUTPUT=$'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mock 1048576 524289 524287 51% /boot'
+assert_fails "kernel preparation rejects /boot free space below 512 MiB" install_approved_kernel
+assert_not_contains "$RECORDED_COMMANDS" "apt-get update" "low /boot space prevents every APT mutation"
+
+reset_kernel_install_state
+MOCK_KERNEL_DF_OUTPUT=$'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mock 1048576 524288 524288 50% /boot'
+assert_success "kernel preparation accepts exactly 512 MiB of free /boot space" install_approved_kernel
+
+reset_kernel_install_state
+MOCK_KERNEL_DF_OUTPUT='invalid df output'
+assert_fails "kernel preparation rejects malformed POSIX df output" install_approved_kernel
+assert_not_contains "$RECORDED_COMMANDS" "apt-get update" "malformed df output prevents every APT mutation"
+
+reset_kernel_install_state
+MOCK_KERNEL_DF_OUTPUT=$'Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/mock 1048576 1 1048575 1% /boot'
+assert_fails "kernel preparation rejects a df header with a missing field" install_approved_kernel
+
+reset_kernel_install_state
+MOCK_KERNEL_DF_OUTPUT=$'Filesystem 1024-blocks Used Available Capacity Mounted on extra\n/dev/mock 1048576 1 1048575 1% /boot'
+assert_fails "kernel preparation rejects a df header with an extra field" install_approved_kernel
+
+reset_kernel_install_state
+MOCK_KERNEL_DF_STATUS=29
+assert_status 29 "kernel free-space query failure preserves its status" install_approved_kernel
+assert_not_contains "$RECORDED_COMMANDS" "apt-get update" "failed free-space query prevents every APT mutation"
+
+reset_kernel_install_state
+MOCK_KERNEL_CANDIDATE='(none)'
+assert_fails "kernel preparation rejects a metapackage without an exact candidate" install_approved_kernel
+assert_not_contains "$(<"$KERNEL_CAPTURED_COMMANDS_FILE")" "apt-get --simulate" "missing kernel candidate prevents simulation"
+assert_not_contains "$RECORDED_COMMANDS" "apt-get --yes" "missing kernel candidate prevents installation"
+
+reset_kernel_install_state
+MOCK_KERNEL_CANDIDATE=$'6.14.0.1020.20\nCandidate: 6.14.0.1020.21'
+assert_fails "kernel preparation rejects duplicate Candidate records" install_approved_kernel
+assert_not_contains "$(<"$KERNEL_CAPTURED_COMMANDS_FILE")" "apt-get --simulate" "duplicate candidates prevent simulation"
+
+reset_kernel_install_state
+MOCK_KERNEL_CANDIDATE='6.14.0.1020.20 extra'
+assert_fails "kernel preparation rejects a malformed Candidate record" install_approved_kernel
+
+reset_kernel_install_state
+MOCK_KERNEL_SIMULATION_OUTPUT=$'Inst linux-oem-6.14 [6.14.0.1020.20]\n  Remv unrelated-package [1.0]'
+assert_fails "kernel preparation rejects a simulated package removal" install_approved_kernel
+assert_not_contains "$RECORDED_COMMANDS" "apt-get --yes" "unsafe simulated removal prevents installation"
+
+reset_kernel_install_state
+MOCK_KERNEL_UPDATE_STATUS=23
+assert_status 23 "kernel APT update failure preserves its status" install_approved_kernel
+assert_not_contains "$(<"$KERNEL_CAPTURED_COMMANDS_FILE")" "apt-cache policy" "failed kernel metadata refresh does not continue to candidate lookup"
+
+reset_kernel_install_state
+MOCK_KERNEL_CANDIDATE_STATUS=41
+assert_status 41 "kernel candidate lookup failure preserves its status" install_approved_kernel
+assert_not_contains "$(<"$KERNEL_CAPTURED_COMMANDS_FILE")" "apt-get --simulate" "failed candidate lookup does not simulate installation"
+
+reset_kernel_install_state
+MOCK_KERNEL_SIMULATION_STATUS=43
+assert_status 43 "kernel simulation failure preserves its status" install_approved_kernel
+assert_not_contains "$RECORDED_COMMANDS" "apt-get --yes" "failed simulation does not install the kernel"
+
+reset_kernel_install_state
+MOCK_KERNEL_INSTALL_STATUS=47
+assert_status 47 "kernel installation failure preserves its status" install_approved_kernel
+
+reset_kernel_install_state
+MOCK_KERNEL_CREATE_BOOT_IMAGE=false
+assert_fails "kernel preparation requires the expected target boot image after installation" install_approved_kernel
+
+reset_kernel_install_state
+MOCK_KERNEL_METAPACKAGE_INSTALLED=true
+printf '' > "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+assert_success "kernel preparation repairs an installed metapackage with an invalid boot image" install_approved_kernel
+assert_success "kernel repair leaves a readable nonempty matching boot image" test -f "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+assert_success "kernel repair leaves a nonempty matching boot image" test -s "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
 
 finish_tests "artifact command"

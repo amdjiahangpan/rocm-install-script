@@ -13,6 +13,10 @@ MOCK_ROCMINFO_OUTPUT=$'  Name:                    gfx1151\n'
 MOCK_AMD_SMI_OUTPUT="ROCm version: 7.14.0"
 MOCK_INSTALLED_ROCM_PACKAGES=""
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=""
+MOCK_KERNEL_METAPACKAGE_INSTALLED=""
+MOCK_KERNEL_CANDIDATE='6.14.0.1020.20'
+MOCK_KERNEL_SIMULATION_OUTPUT='Inst linux-oem-6.14 [6.14.0.1020.20]'
+MOCK_KERNEL_DF_OUTPUT=$'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mock 1048576 1 1048575 1% /boot'
 
 lifecycle_run_cmd() {
     recording_run_cmd "$@"
@@ -44,6 +48,9 @@ capture_cmd() {
     case "$*" in
         */bin/rocminfo) printf '%s\n' "$MOCK_ROCMINFO_OUTPUT" ;;
         */bin/amd-smi\ version) printf '%s\n' "$MOCK_AMD_SMI_OUTPUT" ;;
+        env\ LC_ALL=C\ df\ -Pk\ *) printf '%s\n' "$MOCK_KERNEL_DF_OUTPUT" ;;
+        env\ LC_ALL=C\ apt-cache\ policy\ linux-oem-6.14) printf 'Candidate: %s\n' "$MOCK_KERNEL_CANDIDATE" ;;
+        env\ LC_ALL=C\ apt-get\ --simulate\ --no-remove\ --install-recommends\ install\ linux-oem-6.14) printf '%s\n' "$MOCK_KERNEL_SIMULATION_OUTPUT" ;;
         *) return 1 ;;
     esac
 }
@@ -60,11 +67,15 @@ reset_lifecycle_state() {
     MOCK_ROCMINFO_OUTPUT=$'  Name:                    gfx1151\n'
     MOCK_AMD_SMI_OUTPUT="ROCm version: 7.14.0"
     MOCK_INSTALLED_ROCM_PACKAGES=""
+    MOCK_KERNEL_METAPACKAGE_INSTALLED=""
+    MOCK_KERNEL_CANDIDATE='6.14.0.1020.20'
+    MOCK_KERNEL_SIMULATION_OUTPUT='Inst linux-oem-6.14 [6.14.0.1020.20]'
+    MOCK_KERNEL_DF_OUTPUT=$'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mock 1048576 1 1048575 1% /boot'
     REBOOT_REQUIRED=false
     OS_ID=ubuntu
     OS_VERSION=24.04
     ARCH=x86_64
-    KERNEL_VERSION=6.17.0-generic
+    KERNEL_VERSION=6.14.0-1020-oem
     INSTALL_METHOD=apt
     GPU_ARCHES=gfx1151
     GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'
@@ -75,6 +86,9 @@ reset_lifecycle_state() {
         [method]=apt
         [artifacts]=amdrocm-core-sdk7.14-gfx1151
         [driver_mode]=inbox
+        [kernel_status]=ready
+        [kernel_target]='6.14.*-oem'
+        [kernel_package]=linux-oem-6.14
         [product_names]="$GPU_PRODUCT_NAMES"
     )
 }
@@ -98,7 +112,7 @@ os_release_fixture="${TEST_TEMP_ROOT}/os-release"
 printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "$os_release_fixture"
 OS_RELEASE_FILE=$os_release_fixture
 SYSTEM_ARCH_OVERRIDE=x86_64
-SYSTEM_KERNEL_OVERRIDE=6.17.0-generic
+SYSTEM_KERNEL_OVERRIDE=6.14.0-1020-oem
 assert_success "Ubuntu 24.04 x86_64 is detected from os-release" detect_system
 assert_eq ubuntu "$OS_ID" "system detection records Ubuntu"
 assert_eq 24.04 "$OS_VERSION" "system detection records Ubuntu 24.04"
@@ -292,12 +306,14 @@ MOCK_DKMS_PACKAGE_VERSION=""
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=""
 MOCK_DKMS_STATUS=""
 MOCK_KERNEL_VERSION=7.0.0-generic
+MOCK_OS_VERSION=26.04
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
+KERNEL_BOOT_DIR="${TEST_TEMP_ROOT}/boot"
 
 require_root() { return 0; }
 detect_system() {
     OS_ID=ubuntu
-    OS_VERSION=26.04
+    OS_VERSION=$MOCK_OS_VERSION
     ARCH=x86_64
     KERNEL_VERSION=$MOCK_KERNEL_VERSION
 }
@@ -313,6 +329,10 @@ dpkg-query() {
         return 0
     fi
     case "${!#}" in
+        linux-oem-6.14)
+            [[ "$MOCK_KERNEL_METAPACKAGE_INSTALLED" == linux-oem-6.14 ]] || return 1
+            printf '%s\n' installed
+            ;;
         amdgpu-dkms)
             [[ -n "$MOCK_DKMS_PACKAGE_VERSION" ]] || return 1
             printf 'installed %s\n' "$MOCK_DKMS_PACKAGE_VERSION"
@@ -346,6 +366,11 @@ lifecycle_run_cmd() {
             esac
         done
         MOCK_DKMS_STATUS=""
+    fi
+    if [[ "$1 ${2:-} ${3:-} ${4:-} ${5:-} ${6:-}" == 'apt-get --yes --no-remove --install-recommends install linux-oem-6.14' ]]; then
+        MOCK_KERNEL_METAPACKAGE_INSTALLED=linux-oem-6.14
+        mkdir -p "$KERNEL_BOOT_DIR"
+        printf 'kernel image\n' > "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
     fi
 }
 
@@ -467,10 +492,44 @@ assert_eq "1" "$(recorded_command_count "curl -fL --retry 0 --output" "$RECORDED
 assert_not_contains "$RECORDED_COMMANDS" 'therock-dist-linux-gfx1151-7.14.0.tar.gz' "multi-GFX tarball does not download the gfx1151 artifact"
 assert_not_contains "$RECORDED_COMMANDS" 'therock-dist-linux-gfx120X-all-7.14.0.tar.gz' "multi-GFX tarball does not download a GFX-family artifact"
 
+MOCK_OS_VERSION=24.04
 MOCK_KERNEL_VERSION=6.8.0-generic
 reset_test_state
-assert_fails "kernel validation stops the main flow before mutation" main --gpu-arch gfx1151 --method apt --non-interactive --skip-reboot
-assert_eq "" "$RECORDED_COMMANDS" "kernel rejection records no mutation command"
+assert_fails "Ryzen DKMS policy failure stops the main flow before mutation" main --gpu-arch gfx1151 --method apt --driver-mode dkms --non-interactive --skip-reboot
+assert_eq "" "$RECORDED_COMMANDS" "policy rejection records no mutation command"
+MOCK_OS_VERSION=26.04
+MOCK_KERNEL_VERSION=7.0.0-generic
+
+MOCK_OS_VERSION=24.04
+MOCK_KERNEL_VERSION=6.8.0-101-generic
+MOCK_KERNEL_METAPACKAGE_INSTALLED=''
+MOCK_DKMS_PACKAGE_VERSION=''
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
+MOCK_DKMS_STATUS=''
+MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=''
+rm -rf "$KERNEL_BOOT_DIR"
+mkdir -p "$KERNEL_BOOT_DIR"
+assert_success "mismatched Ryzen kernel installs the approved package then stops before driver or ROCm" run_mocked_main apt --gpu-arch gfx1151
+assert_eq install-required "${INSTALL_PLAN[kernel_status]}" "mismatched kernel plan records installation requirement"
+assert_contains "$RECORDED_COMMANDS" "apt-get --yes --no-remove --install-recommends install linux-oem-6.14" "kernel preparation installs the approved OEM metapackage"
+assert_not_contains "$RECORDED_COMMANDS" "curl ca-certificates gnupg pciutils" "kernel preparation stops before prerequisites"
+assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk7.14" "kernel preparation stops before ROCm installation"
+assert_not_contains "$RECORDED_COMMANDS" "reboot" "skip reboot suppresses the reboot command after kernel preparation"
+assert_success "kernel preparation verifies a nonempty OEM boot image before stopping" test -s "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+
+MOCK_KERNEL_METAPACKAGE_INSTALLED=linux-oem-6.14
+reset_test_state
+assert_success "installed target metapackage waits for reboot without APT work" run_mocked_main apt --gpu-arch gfx1151
+assert_eq reboot-required "${INSTALL_PLAN[kernel_status]}" "installed target metapackage plan records reboot requirement"
+assert_eq '' "$RECORDED_COMMANDS" "reboot-required kernel status does no APT, driver, or ROCm work when reboot is skipped"
+
+reset_test_state
+main --method apt --non-interactive --skip-ssh --gpu-arch gfx1151 > "${TEST_TEMP_ROOT}/kernel-reboot-output"
+assert_contains "$RECORDED_COMMANDS" "reboot" "reboot-required kernel status uses the existing reboot handler"
+assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk7.14" "reboot-required kernel status still stops before ROCm"
+MOCK_OS_VERSION=26.04
+MOCK_KERNEL_VERSION=7.0.0-generic
+MOCK_KERNEL_METAPACKAGE_INSTALLED=''
 
 reset_lifecycle_state
 GPU_DETECTION_DRM_ROOT="${TEST_TEMP_ROOT}/missing-drm-root"
@@ -495,8 +554,34 @@ assert_eq "" "$RECORDED_COMMANDS$MANAGED_FILES$PASSWORD_UPDATES" "automatic veri
 assert_eq $'/opt/rocm/core-7.14/bin/rocminfo\n/opt/rocm/core-7.14/bin/amd-smi version' "$(<"$CAPTURED_COMMANDS_FILE")" "automatic verify-only captures only verification binaries"
 unset GPU_DETECTION_KFD_ROOT GPU_DETECTION_DRM_ROOT
 
+MOCK_OS_VERSION=24.04
+MOCK_KERNEL_VERSION=6.8.0-101-generic
+MOCK_KERNEL_METAPACKAGE_INSTALLED=linux-oem-6.14
+mkdir -p "$KERNEL_BOOT_DIR"
+printf 'kernel image\n' > "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+confirm_install_plan() {
+    rm -f "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+}
+reset_test_state
+assert_fails "kernel state changing after confirmation fails closed before preparation or reboot" main --method apt --non-interactive --skip-ssh --skip-reboot --gpu-arch gfx1151
+assert_eq '' "$RECORDED_COMMANDS" "stale confirmed kernel plan performs no APT, driver, ROCm, or reboot command"
+MOCK_OS_VERSION=26.04
+MOCK_KERNEL_VERSION=7.0.0-generic
+MOCK_KERNEL_METAPACKAGE_INSTALLED=''
+
 resolve_gpu_identity() { fail "uninstall must not resolve GPU identity"; }
 reset_lifecycle_state
 assert_success "uninstall exits before GPU identity resolution" main --uninstall --non-interactive
+
+kernel_policy_for() { fail "verify-only and uninstall must not plan a kernel"; }
+resolve_gpu_identity() { GPU_ARCHES=gfx1151; GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'; }
+reset_lifecycle_state
+assert_success "verify-only exits before kernel planning or preparation" main --verify-only --method apt --gpu-arch gfx1151
+assert_eq '' "$RECORDED_COMMANDS" "verify-only performs no kernel, driver, or installation command"
+
+resolve_gpu_identity() { fail "uninstall must not resolve GPU identity"; }
+reset_lifecycle_state
+assert_success "uninstall exits before kernel planning or kernel package mutation" main --uninstall --non-interactive
+assert_not_contains "$RECORDED_COMMANDS" "linux-" "uninstall never removes or installs kernels"
 
 finish_tests "installer lifecycle"

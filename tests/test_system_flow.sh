@@ -7,7 +7,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
 FLOW=""
 record_step() { FLOW+="$1"$'\n'; }
 require_root() { record_step root; }
-detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=6.17.0-generic; }
+detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=6.14.0-1020-oem; }
 resolve_gpu_identity() {
     [[ $# -eq 0 ]] || return 64
     GPU_ARCHES=$(normalize_gfxes "$GPU_ARCHES") || return $?
@@ -25,12 +25,17 @@ resolve_install_plan() {
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
         [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE")"
+        [kernel_status]=ready
+        [kernel_target]='6.14.*-oem'
+        [kernel_package]=linux-oem-6.14
         [product_names]="$GPU_PRODUCT_NAMES"
     )
     record_step plan
 }
 print_install_plan() { record_step print-plan; }
 confirm_install_plan() { record_step confirm; }
+prepare_approved_kernel() { record_step "kernel:${INSTALL_PLAN[kernel_status]}"; }
+validate_install_plan() { return 0; }
 step_prerequisites() { record_step prerequisites; }
 step_install_driver() { record_step "driver:${INSTALL_PLAN[driver_mode]}"; }
 step_install_rocm() { record_step "rocm:${INSTALL_PLAN[method]}"; }
@@ -52,15 +57,15 @@ capture_main_output() {
 }
 
 assert_success "auto driver mode resolves to inbox" main --gpu-arch gfx1151 --non-interactive --skip-reboot
-assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\ndriver:inbox\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "main migrates the driver before prerequisites"
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:inbox\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "main prepares a ready kernel before migrating the driver"
 FLOW=""
 assert_success "explicit DKMS driver mode reaches the driver step" main --gpu-arch gfx1201 --driver-mode dkms --non-interactive --skip-reboot
-assert_eq $'root\nsystem\ngpu:gfx1201\nplan\nprint-plan\nconfirm\ndriver:dkms\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "DKMS migration precedes prerequisite installation"
+assert_eq $'root\nsystem\ngpu:gfx1201\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:dkms\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "DKMS migration follows ready-kernel preparation"
 
 FLOW=""
 assert_success "repeated GPU architectures create one normalized lifecycle" main --gpu-arch gfx1201 --gpu-arch gfx1151 --gpu-arch gfx1201 --non-interactive --skip-reboot
 assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "repeated GPU architectures normalize before planning"
-assert_eq $'root\nsystem\ngpu:gfx1151,gfx1201\nplan\nprint-plan\nconfirm\ndriver:inbox\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "multi-GFX main flow runs every lifecycle phase once in order"
+assert_eq $'root\nsystem\ngpu:gfx1151,gfx1201\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:inbox\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "multi-GFX main flow runs every ready-kernel lifecycle phase once in order"
 
 FLOW=""
 assert_success "verify-only normalizes repeated GPU architectures" main --verify-only --method apt --gpu-arch gfx1201 --gpu-arch gfx1151 --gpu-arch gfx1201
@@ -76,7 +81,7 @@ assert_contains "$MAIN_OUTPUT" "sudo" "root preflight tells users how to proceed
 assert_eq "root" "${FLOW%$'\n'}" "root preflight runs no later stage"
 
 require_root() { record_step root; }
-detect_system() { record_step system; OS_ID=debian; OS_VERSION=13; ARCH=x86_64; KERNEL_VERSION=6.17.0-generic; return 29; }
+detect_system() { record_step system; OS_ID=debian; OS_VERSION=13; ARCH=x86_64; KERNEL_VERSION=6.14.0-1020-oem; return 29; }
 FLOW=""
 assert_status 29 "system detection preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
 assert_contains "$MAIN_OUTPUT" "system detection" "system detection identifies the failed stage"
@@ -84,7 +89,7 @@ assert_contains "$MAIN_OUTPUT" "Ubuntu/x86_64" "system detection tells users the
 assert_contains "$MAIN_OUTPUT" "os=debian-13" "system detection reports detected host context"
 assert_eq $'root\nsystem' "${FLOW%$'\n'}" "system detection runs no mutation stage"
 
-detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=6.17.0-generic; }
+detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=6.14.0-1020-oem; }
 resolve_gpu_identity() { record_step gpu; return 31; }
 FLOW=""
 assert_status 31 "GPU preflight preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
@@ -103,7 +108,7 @@ FLOW=""
 assert_status 37 "plan validation preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
 assert_contains "$MAIN_OUTPUT" "installation plan validation" "plan validation identifies the failed stage"
 assert_contains "$MAIN_OUTPUT" "os=ubuntu-24.04" "plan validation reports operating-system context"
-assert_contains "$MAIN_OUTPUT" "kernel=6.17.0-generic" "plan validation reports kernel context"
+assert_contains "$MAIN_OUTPUT" "kernel=6.14.0-1020-oem" "plan validation reports kernel context"
 assert_contains "$MAIN_OUTPUT" "driver=auto" "plan validation reports driver context"
 assert_contains "$MAIN_OUTPUT" "gfx=gfx1151" "plan validation reports GPU context"
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan' "${FLOW%$'\n'}" "plan validation runs no mutation stage"
@@ -119,6 +124,9 @@ resolve_install_plan() {
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
         [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE")"
+        [kernel_status]=ready
+        [kernel_target]='6.14.*-oem'
+        [kernel_package]=linux-oem-6.14
         [product_names]="$GPU_PRODUCT_NAMES"
     )
     record_step plan
@@ -138,6 +146,31 @@ assert_contains "$MAIN_OUTPUT" "installation confirmation" "installation confirm
 assert_contains "$MAIN_OUTPUT" "cancelled" "installation confirmation tells users it was cancelled"
 assert_contains "$MAIN_OUTPUT" "--non-interactive" "installation confirmation tells users how to bypass prompts"
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm' "${FLOW%$'\n'}" "installation confirmation runs no mutation stage"
+
+resolve_install_plan() {
+    local artifacts
+
+    artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$GPU_ARCHES") || return $?
+    INSTALL_PLAN=(
+        [gfxes]="$GPU_ARCHES"
+        [os_key]=ubuntu-24.04.4
+        [repo_slug]=ubuntu2404
+        [method]="$INSTALL_METHOD"
+        [artifacts]="$artifacts"
+        [driver_mode]=inbox
+        [kernel_status]=install-required
+        [kernel_target]='6.14.*-oem'
+        [kernel_package]=linux-oem-6.14
+        [product_names]="$GPU_PRODUCT_NAMES"
+    )
+    record_step plan
+}
+confirm_install_plan() { record_step confirm; }
+prepare_approved_kernel() { record_step "kernel:${INSTALL_PLAN[kernel_status]}"; }
+handle_reboot() { record_step reboot; }
+FLOW=""
+assert_success "kernel preparation stops the lifecycle before driver or ROCm work" main --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\nkernel:install-required\nreboot' "${FLOW%$'\n'}" "non-ready kernel lifecycle only prepares and reboots"
 
 MOCK_DKMS_PACKAGE_VERSION=''
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
@@ -193,10 +226,14 @@ assert_success "DKMS mode migrates to AMDGPU 31.40" migrate_driver
 assert_contains "$RECORDED_COMMANDS" "dpkg --purge amdgpu-dkms" "DKMS purges conflicting old state before repository setup"
 assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "DKMS installs AMDGPU 31.40"
 
-assert_success "Ubuntu 24 inbox accepts 6.17" validate_ubuntu_kernel inbox ubuntu-24.04.4 6.17.0-generic
-assert_fails "Ubuntu 24 inbox rejects 6.8" validate_ubuntu_kernel inbox ubuntu-24.04.4 6.8.0-generic
-assert_success "Ubuntu 24 DKMS accepts 6.8" validate_ubuntu_kernel dkms ubuntu-24.04.4 6.8.0-generic
-assert_success "Ubuntu 26 accepts 7.0 for either driver mode" validate_ubuntu_kernel inbox ubuntu-26.04 7.0.0-generic
-assert_success "Ubuntu 26 accepts 7.0 DKMS" validate_ubuntu_kernel dkms ubuntu-26.04 7.0.0-generic
+assert_eq '6.14.*-oem|linux-oem-6.14' "$(kernel_policy_for inbox ubuntu-24.04.4 gfx1151)" "Ubuntu 24 Ryzen targets select the approved OEM metapackage"
+assert_success "Ubuntu 24 Ryzen accepts the current OEM kernel release" validate_ubuntu_kernel inbox ubuntu-24.04.4 6.14.0-1020-oem gfx1151
+assert_fails "Ubuntu 24 Ryzen rejects a matching series with generic flavor" validate_ubuntu_kernel inbox ubuntu-24.04.4 6.14.0-1020-generic gfx1151
+assert_fails "Ubuntu 24 Ryzen rejects DKMS mode" kernel_policy_for dkms ubuntu-24.04.4 gfx1151
+assert_fails "Ubuntu 24 mixed Ryzen and non-Ryzen targets fail closed" kernel_policy_for inbox ubuntu-24.04.4 $'gfx1151\ngfx1201'
+assert_eq '6.8.*-generic|linux-generic' "$(kernel_policy_for inbox ubuntu-24.04.4 gfx1201)" "Ubuntu 24 non-Ryzen targets select the GA generic metapackage"
+assert_success "Ubuntu 24 non-Ryzen DKMS accepts the GA generic kernel" validate_ubuntu_kernel dkms ubuntu-24.04.4 6.8.0-101-generic gfx1201
+assert_eq '7.0.*-generic|linux-generic-7.0' "$(kernel_policy_for inbox ubuntu-26.04 gfx1151)" "Ubuntu 26 selects the approved generic metapackage"
+assert_success "Ubuntu 26 accepts the generic kernel for either driver mode" validate_ubuntu_kernel dkms ubuntu-26.04 7.0.0-11-generic gfx1151
 
 finish_tests "system flow"
