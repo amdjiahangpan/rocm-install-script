@@ -1,236 +1,331 @@
-# ROCm Unified Installation Script
+# ROCm 7.14.0 Installer
 
-A one-click installation script for AMD ROCm platform that supports multiple versions and Linux distributions.
+`rocm-install.sh` installs the ROCm 7.14.0 compute stack on supported AMD GPUs.
+The release is fixed at 7.14.0, not 7.1.4. It doesn't select or discover other
+ROCm releases.
 
-## Features
+The supported host is Ubuntu 24.04 or 26.04 on `x86_64`. Package selection is
+based only on one unique KFD `gfx_target_version`, or an explicit `--gpu-arch`.
+The DRM product name is informational only. OS, kernel, driver, and artifact
+checks must all pass before the script changes the system.
 
-- **Auto-detect latest ROCm version** from AMD repository
-- **Interactive TUI menu** for version selection
-- **Multi-distribution support**: Ubuntu 22.04/24.04/26.04, Debian 12/13, RHEL 9.x
-- **Automatic GPU detection**
-- **Kernel version locking** to prevent driver incompatibility
-- **Complete environment configuration**
-- **Non-interactive mode** for automation
+> [!WARNING]
+> SSH setup is enabled by default. It installs and starts OpenSSH, enables
+> `PermitRootLogin yes`, and enables `PasswordAuthentication yes` in
+> `/etc/ssh/sshd_config.d/99-rocm-installer.conf`. Use `--skip-ssh` to avoid
+> these changes. `--root-password PASS` changes the root password when SSH
+> setup runs.
 
 ## Quick Start
 
-### One-Line Installation (Recommended)
+Run the script directly from the public `unified-installer` branch:
 
 ```bash
-# Install latest ROCm version
-curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest
-
-# Or download first, then run
-wget https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh
-chmod +x rocm-install.sh
-sudo ./rocm-install.sh
+curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash
 ```
 
-### Clone Repository (For Development)
+Or download it first:
 
 ```bash
-git clone https://github.com/amdjiahangpan/rocm-install-script.git
+curl -fLO https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh
+sudo bash ./rocm-install.sh
+```
+
+Or clone the public branch:
+
+```bash
+git clone --branch unified-installer --single-branch https://github.com/amdjiahangpan/rocm-install-script.git
 cd rocm-install-script
-git checkout unified-installer
-sudo ./rocm-install.sh
+sudo bash ./rocm-install.sh
 ```
 
-## Usage
+The default run uses APT and installs the architecture-specific full Core SDK.
+It prints the resolved plan and asks for confirmation before installing. If a
+driver, group, or udev change requires a reboot, the default reboot policy is
+immediate.
 
-### Interactive Mode (Recommended)
+After confirmation, the installer migrates the driver before running any
+prerequisite APT update or install. It removes a conflicting legacy DKMS driver
+and rechecks for residue before installing prerequisites, ROCm, SSH, and the
+system environment.
+
+## Supported Systems and GPUs
+
+| Host | CPU architecture | Workload |
+| --- | --- | --- |
+| Ubuntu 24.04 | `x86_64` | Compute |
+| Ubuntu 26.04 | `x86_64` | Compute |
+
+Ubuntu 24.04 is normalized to the supported 24.04.4 record. Other operating
+systems, CPU architectures, and workloads are rejected.
+
+The installer supports these architecture-specific artifacts:
+
+```text
+gfx950 gfx942 gfx90a gfx908 gfx1201 gfx1200 gfx1100 gfx1101 gfx1102 gfx1030
+gfx1151 gfx1150 gfx1152 gfx1153 gfx1103
+```
+
+### Fail-Closed GPU Selection
+
+Automatic pre-install detection scans KFD topology nodes with
+`cpu_cores_count == 0` and a nonzero `gfx_target_version`. The decimal target is
+decoded into its conventional `gfx` name and deduplicated. Exactly one unique
+architecture succeeds. Zero or multiple unique architectures require an explicit
+`--gpu-arch`; the override must be one of the supported artifact architectures.
+
+For display only, the installer reads `/sys/class/drm/card*/device/product_name`.
+If it is empty, it performs an exact device/revision lookup in the installed
+`/usr/share/libdrm/amdgpu.ids` file and prefixes the resulting marketing name
+with `AMD `. This informational name never selects a package, SKU, driver, or
+kernel. Pre-install detection does not use `rocminfo`, `/proc/cpuinfo`, or
+`lspci`; `rocminfo` remains a post-install verification requirement.
+
+## Kernel and Driver Requirements
+
+The script validates the running kernel and doesn't install, replace, hold, or
+lock a kernel.
+
+| Resolved driver mode | Ubuntu 24.04 | Ubuntu 26.04 |
+| --- | --- | --- |
+| Inbox | 6.17 HWE | 7.0 GA |
+| DKMS | 6.8 GA | 7.0 GA |
+
+A kernel mismatch stops the installation before package or system changes.
+Install the required kernel, reboot, and run the script again.
+
+`auto` resolves to the inbox AMDGPU driver. Explicit `dkms` installs AMDGPU
+31.40 from AMD's Ubuntu repository. `inbox` and `auto` remove conflicting old
+DKMS state under the configured cleanup policy.
+
+### Existing DKMS Installations
+
+The script checks the installed `amdgpu-dkms` and `amdgpu-dkms-firmware`
+packages and registered AMDGPU DKMS modules.
+
+- Inbox mode purges installed legacy DKMS packages before any prerequisite APT
+  update or install, then verifies that no AMDGPU DKMS residue remains.
+- DKMS mode keeps a clean 31.40 installation unchanged.
+- DKMS mode purges an older, mixed, or malformed AMDGPU DKMS install, verifies
+  that no residue remains, then configures the 31.40 repository and installs it.
+- Any remaining module after package removal stops the installation.
+
+The cleanup policy applies whenever removal is required:
+
+| Policy | Behavior |
+| --- | --- |
+| `auto` | Ask for confirmation in an interactive run. Refuse cleanup in a non-interactive run. |
+| `ask` | Ask for confirmation in an interactive run. Refuse cleanup in a non-interactive run. |
+| `always` | Remove the conflicting installation without asking. |
+| `never` | Refuse the migration without changing the driver. |
+
+For unattended migration from an older driver, pass
+`--dkms-cleanup always`.
+
+## Installation Methods
+
+### APT, Default
+
+APT configures AMD's `packages-multi-arch` repository for `ubuntu2404` or
+`ubuntu2604`, then installs the full architecture-specific Core SDK package:
+
+```text
+amdrocm-core-sdk7.14-<gfx>
+```
+
+For example, `gfx1151` installs `amdrocm-core-sdk7.14-gfx1151`. There is no
+generic all-architecture fallback.
+
+Before that installation, APT checks the installed package database and removes
+only exact installed legacy names matching `^rocm($|-)`, such as `rocm` and
+`rocm-dev`. It never uses a package glob and never selects `amdrocm*` packages
+for this migration. The current package installation owns its own metadata and
+alternatives; the installer exposes the APT stack from `/opt/rocm/core-7.14`
+instead of relying on a stale `/opt/rocm` link.
+
+### Pip
+
+`--method pip` creates `/opt/rocm-7.14.0-venv` and installs the pinned
+architecture extra from AMD's multi-architecture wheel index:
+
+```text
+rocm[libraries,device-<gfx>]==7.14.0
+```
+
+The system profile exposes the virtual environment's `bin` directory but
+doesn't activate the environment automatically.
+
+### Tarball
+
+`--method tarball` downloads the reviewed artifact for the selected
+architecture. It extracts into a temporary staging directory, promotes the
+result to `/opt/rocm-7.14.0`, then updates `/opt/rocm`. A failed extraction or
+activation leaves the previous installation in place when rollback succeeds.
+
+All three methods use the same GPU, OS, kernel, and driver validation.
+
+## Command-Line Options
+
+| Option | Meaning |
+| --- | --- |
+| `--method METHOD` | Installation method: `apt`, `pip`, or `tarball`. Default: `apt`. |
+| `--gpu-arch ARCH` | Supported architecture override when KFD has zero or multiple unique targets. |
+| `--driver-mode MODE` | `auto` (default), `inbox`, or `dkms`. |
+| `--skip-ssh` | Skip OpenSSH setup and any root password update. |
+| `--root-password PASS` | Set the root password during SSH setup. |
+| `--skip-reboot` | Don't reboot after an installation that requires one. |
+| `--reboot-delay MIN` | Delay a required reboot by 0 to 120 minutes. `0` means immediate. |
+| `--verify-only` | Verify an existing installation and make no install changes. |
+| `--uninstall` | Remove the ROCm 7.14.0 installation. |
+| `--non-interactive` | Run without confirmation prompts. |
+| `--dkms-cleanup POLICY` | DKMS cleanup policy: `auto`, `ask`, `always`, or `never`. Default: `auto`. |
+| `--help`, `-h` | Show command help. |
+
+`--verify-only` and `--uninstall` can't be used together. Password values that
+contain a newline or carriage return are rejected.
+
+## Examples
+
+Install with automatic GPU detection and the default APT method:
 
 ```bash
-sudo ./rocm-install.sh
+sudo bash ./rocm-install.sh
 ```
 
-This will show an interactive menu where you can:
-1. Select ROCm version (or use latest)
-2. Configure installation options, including driver mode and DKMS cleanup policy
-3. Manage extra packages
-
-### Command Line Options
+Override KFD detection when the host has no unique target:
 
 ```bash
-sudo ./rocm-install.sh [options]
-
-Options:
-  --version VERSION      Install specific ROCm version (e.g., 7.13.0, 7.2.4)
-  --latest               Install latest available version
-  --skip-ssh             Skip SSH configuration
-  --skip-reboot          Skip reboot after installation
-  --reboot-delay MIN     Delay reboot for MIN minutes (0=immediate, default: 0)
-  --verify-only          Only verify existing installation
-  --uninstall            Remove ROCm
-  --driver-mode MODE     Driver mode: auto (default), inbox, or dkms
-  --no-dkms              Skip DKMS driver (use pre-built)
-  --dkms-cleanup POLICY   DKMS cleanup policy: auto (default), ask, always, or never
-  --non-interactive      Run without prompts
-  --help                 Show help message
+sudo bash ./rocm-install.sh --gpu-arch gfx1151
 ```
 
-### Examples
+Install the pip package set without changing SSH or rebooting automatically:
 
 ```bash
-# Interactive installation with menu
-wget https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh
-sudo bash rocm-install.sh
-
-# One-line: Install latest version
-curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest
-
-# One-line: Install specific version
-curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --version 7.13.0
-
-# One-line: Install with 10-minute delayed reboot
-curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest --reboot-delay 10
-
-# Explicit driver mode selection
-sudo ./rocm-install.sh --latest --driver-mode dkms
-
-# Install without DKMS (for newer kernels)
-sudo ./rocm-install.sh --latest --no-dkms
-
-# Ryzen AI APUs should use inbox driver mode
-sudo ./rocm-install.sh --latest --driver-mode inbox
-
-# Remove existing amdgpu-dkms before switching a Ryzen APU to inbox mode
-sudo ./rocm-install.sh --latest --driver-mode inbox --dkms-cleanup always
-
-# Verify installation
-sudo ./rocm-install.sh --verify-only
-
-# Uninstall
-sudo ./rocm-install.sh --uninstall
-
-# Automated installation for scripts (no interactive prompts)
-curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash -s -- --latest --non-interactive --skip-reboot
+sudo bash ./rocm-install.sh --method pip --skip-ssh --skip-reboot
 ```
 
-## Supported Configurations
+Install from the reviewed tarball in an unattended run:
 
-| Distribution | Versions | Status |
-|-------------|----------|--------|
-| Ubuntu | 22.04, 24.04, 26.04 | ✅ Supported |
-| Debian | 12, 13 | ✅ Supported |
-| RHEL/Rocky/AlmaLinux | 9.x | ✅ Supported |
+```bash
+sudo bash ./rocm-install.sh --method tarball --gpu-arch gfx942 --driver-mode dkms \
+  --non-interactive --dkms-cleanup always --skip-reboot
+```
 
-## What Gets Installed
+Change the root password while applying the default SSH configuration:
 
-### Core Packages
-- AMDGPU driver (DKMS or pre-built)
-- ROCm runtime and libraries
-- rocminfo, rocm-smi, clinfo
+```bash
+sudo bash ./rocm-install.sh --root-password 'replace-with-a-strong-password'
+```
 
-For ROCm 7.13 on apt-based Ryzen systems, the script follows AMD's technology
-preview package-manager path: it configures AMD's native ROCm package repository
-(`repo.amd.com/rocm/packages/<distro>`) and installs the matching architecture
-meta-package, such as `amdrocm7.13-gfx110x` for `gfx1103` APUs. If DKMS driver
-mode is selected, the AMDGPU driver installer still comes from AMD's matching
-`amdgpu-install` 31.30 repository; inbox driver mode skips that driver installer.
-Older production releases keep the existing `amdgpu-install` repository
-bootstrap path for ROCm packages too.
+Verify an installed APT/default installation:
 
-### Extra Packages (configurable)
-- python3-setuptools, python3-wheel, python3-pip
-- build-essential, cmake, git
-- vim, htop, nfs-common
+```bash
+sudo bash ./rocm-install.sh --method apt --verify-only
+```
 
-### System Configuration
-- User added to `video` and `render` groups
-- Udev rules for GPU permissions
-- ROCm paths in `/etc/profile.d/rocm.sh`
-- Library paths in `/etc/ld.so.conf.d/rocm.conf`
-- Kernel version locked to prevent updates
+Remove ROCm without a confirmation prompt:
 
-## Post-Installation
+```bash
+sudo bash ./rocm-install.sh --uninstall --non-interactive
+```
 
-After installation completes:
+## Retained System Setup
 
-1. **Reboot** your system
-2. **Verify** installation:
-   ```bash
-   rocminfo
-   rocm-smi
-   ```
-3. **Test** GPU access:
-   ```bash
-   /opt/rocm/bin/rocminfo | grep "Name:"
-   ```
+After successful driver migration, the script installs required download,
+signing, GPU detection, and time-sync packages before installing ROCm. It also
+attempts to install these optional tools without failing the ROCm installation if
+that optional step fails:
+
+```text
+build-essential cmake git python3 python3-pip python3-setuptools python3-wheel
+vim htop tmux screen net-tools nfs-common rsync usbutils lshw dmidecode
+sysstat iotop unzip zip p7zip-full jq libnuma-dev
+```
+
+The installation also:
+
+- enables `systemd-timesyncd` and NTP;
+- adds the invoking user to `video` and `render` when needed;
+- writes GPU access rules to `/etc/udev/rules.d/70-amdgpu.rules`;
+- writes APT linker and profile paths from `/opt/rocm/core-7.14`;
+- writes tarball linker and profile paths from `/opt/rocm`;
+- leaves user shell startup files unchanged.
+
+Log out and back in, or reboot, before relying on new group membership.
+
+## Verification and Reboot
+
+When a driver, group membership, or udev rule changes, the script marks the
+current run as requiring a reboot. Verification then reports that it is pending
+instead of claiming success, and the selected reboot policy runs.
+
+After reboot, verify the APT or tarball installation with:
+
+```bash
+sudo bash ./rocm-install.sh --method apt --verify-only
+sudo bash ./rocm-install.sh --method tarball --verify-only
+```
+
+For a pip installation, use:
+
+```bash
+sudo bash ./rocm-install.sh --method pip --verify-only
+```
+
+Post-install verification requires both `rocminfo` and `amd-smi version`. The
+latter must report ROCm 7.14.0. The `--method` value chooses the verification
+root, so the check invokes the selected method's absolute binaries rather than
+depending on a future profile update: APT uses
+`/opt/rocm/core-7.14/bin`, tarball uses `/opt/rocm/bin`, and pip uses
+`/opt/rocm-7.14.0-venv/bin`.
+
+## Uninstall
+
+Interactive uninstall asks for confirmation. `--non-interactive` skips that
+prompt. The uninstall path:
+
+- purges only installed architecture-specific `amdrocm` ROCm 7.14 full SDK
+  package candidates;
+- removes `/opt/rocm/core-7.14`, `/opt/rocm-7.14.0`, and
+  `/opt/rocm-7.14.0-venv`;
+- removes `/opt/rocm` only when it points to `/opt/rocm-7.14.0`;
+- removes the ROCm APT source, ROCm package key, profile, linker file, and udev
+  rules created by the installer;
+- reloads the linker cache and udev rules.
+
+Uninstall deliberately leaves legacy `rocm*` packages, `amdgpu-dkms`, the SSH
+drop-in, OpenSSH package, AMDGPU repository configuration, optional tools, NTP
+configuration, and user group membership unchanged. Legacy packages are only
+removed during the explicit latest APT migration described above.
 
 ## Troubleshooting
 
-### GPU not detected after reboot
-```bash
-# Check if driver is loaded
-lsmod | grep amdgpu
+If pre-install GPU detection fails, inspect KFD topology:
 
-# Check kernel messages
+```bash
+cat /sys/class/kfd/kfd/topology/nodes/*/properties
+```
+
+Use `--gpu-arch` only when KFD cannot provide exactly one unique target.
+
+If the driver isn't active after reboot, check:
+
+```bash
+lsmod | grep amdgpu
 dmesg | grep amdgpu
 ```
 
-### Permission denied
-```bash
-# Verify group membership
-groups $USER
-
-# Re-login or run
-newgrp video
-newgrp render
-```
-
-### DKMS build fails
-Use `--no-dkms` flag:
-```bash
-sudo ./rocm-install.sh --latest --no-dkms
-```
-
-### Ryzen AI APU systems
-Driver mode defaults to `auto`, which uses inbox driver mode when a Ryzen APU is
-detected. The script treats exact Ryzen APU targets such as `gfx1150`,
-`gfx1151`, `gfx1152`, `gfx1153`, and `gfx1103` conservatively. To force the AMD-recommended
-Ryzen APU path explicitly:
-```bash
-sudo ./rocm-install.sh --latest --driver-mode inbox
-```
-
-If you are migrating from an older DKMS-based install on a Ryzen APU, use the
-cleanup policy to remove `amdgpu-dkms` before installation:
-```bash
-sudo ./rocm-install.sh --latest --driver-mode inbox --dkms-cleanup always
-```
-
-Cleanup policy behavior:
-- `auto`: prompt in interactive mode, skip in non-interactive mode
-- `ask`: prompt in interactive mode, skip in non-interactive mode
-- `always`: remove without prompting
-- `never`: warn only, do not remove
-
-For standard non-APU installs, resolved driver mode stays `dkms`, so cleanup does
-not run unless inbox mode is selected.
-
-For ROCm 7.13 native apt installs, the script refuses to use AMD's generic
-`amdrocm7.13` package when the GPU architecture cannot be determined, because
-that package pulls every supported gfx architecture. If auto-detection is
-ambiguous, specify the target explicitly, for example:
+For permission problems, confirm the invoking user has both groups:
 
 ```bash
-sudo ./rocm-install.sh --version 7.13.0 --gpu-arch gfx1150 --driver-mode inbox
-sudo ./rocm-install.sh --version 7.13.0 --gpu-arch gfx1103 --driver-mode inbox
+id -nG "$USER"
 ```
-
-## Legacy Branches
-
-For specific older configurations, legacy branches are still available:
-- `ROCm_6.4.x_ubuntu_24.04`
-- `ROCm_7.x.x_ubuntu_24.04`
-
-Use `git checkout <branch>` to access them.
 
 ## Resources
 
-- [Official ROCm Documentation](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/)
-- [AMD GPU Driver Repository](https://repo.radeon.com/amdgpu-install/)
-- [ROCm GitHub](https://github.com/ROCm)
+- [ROCm installation documentation](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/)
+- [AMD GPU driver repository](https://repo.radeon.com/amdgpu/)
+- [ROCm on GitHub](https://github.com/ROCm)
 
 ## License
 
