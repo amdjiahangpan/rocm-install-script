@@ -1482,6 +1482,52 @@ main() {
     fi
 }
 
+is_interactive_terminal() {
+    [[ -t 0 && -t 1 ]]
+}
+
+show_startup_menu() {
+    local choice
+
+    printf '%s\n' \
+        '1. Install or repair ROCm' \
+        '2. Verify ROCm installation' \
+        '3. Uninstall ROCm' \
+        '4. Exit'
+    while true; do
+        printf '%s' 'Select an action [1-4]: '
+        if ! IFS= read -r choice; then
+            return 0
+        fi
+        case "$choice" in
+            1)
+                main
+                return $?
+                ;;
+            2)
+                main --verify-only
+                return $?
+                ;;
+            3)
+                main --uninstall
+                return $?
+                ;;
+            4) return 0 ;;
+            *) printf '%s\n' 'Invalid selection. Enter 1, 2, 3, or 4.' >&2 ;;
+        esac
+    done
+}
+
+run_entrypoint() {
+    if (($#)); then
+        main "$@"
+    elif is_interactive_terminal; then
+        show_startup_menu
+    else
+        main
+    fi
+}
+
 if [[ "${ROCM_INSTALL_LIBRARY_MODE:-}" != 1 ]]; then
-    main "$@"
+    run_entrypoint "$@"
 fi
