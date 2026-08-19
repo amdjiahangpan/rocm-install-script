@@ -193,6 +193,17 @@ FLOW=""
 assert_status 21 "explicit kernel preparation reports pending reboot" capture_main_output --gpu-arch gfx1151 --prepare-kernel --non-interactive --skip-reboot
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\nkernel:install-required' "${FLOW%$'\n'}" "explicit preparation stops after preparing the target kernel"
 
+resolve_install_plan() {
+    INSTALL_PLAN=([kernel_status]=ready [driver_mode]=inbox [method]=apt)
+    record_step plan
+}
+step_install_driver() { record_step driver; return 47; }
+FLOW=""
+assert_status 47 "driver migration preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "driver migration" "driver failure identifies the failed stage"
+assert_contains "$MAIN_OUTPUT" "status=47" "driver failure reports the preserved status"
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\ndriver' "${FLOW%$'\n'}" "driver failure stops every later lifecycle stage"
+
 MOCK_DKMS_PACKAGE_VERSION=''
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
 MOCK_DKMS_STATUS=''

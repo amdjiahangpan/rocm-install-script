@@ -1798,6 +1798,23 @@ preflight_error() {
     printf 'ROCm preflight failed during %s: %s\n' "$1" "$2" >&2
 }
 
+run_stage() {
+    local stage=${1:-} status
+
+    [[ $# -ge 2 && -n "$stage" ]] || return 1
+    shift
+    if "$@"; then
+        return 0
+    else
+        status=$?
+    fi
+    printf 'ROCm installer failed during %s: status=%s os=%s kernel=%s driver=%s gfx=%s.\n' \
+        "$stage" "$status" "${OS_DESCRIPTION:-${OS_ID:-unknown}-${OS_VERSION:-unknown}}" \
+        "${KERNEL_VERSION:-unknown}" "${INSTALL_PLAN[driver_mode]:-${DRIVER_MODE:-unknown}}" \
+        "${GPU_ARCHES//$'\n'/,}" >&2
+    return "$status"
+}
+
 report_kernel_action_required() {
     printf 'ROCm kernel action required: current kernel=%s, target kernel=%s, package=%s. Re-run with --prepare-kernel to install the reviewed kernel.\n' \
         "${KERNEL_VERSION:-unknown}" "${INSTALL_PLAN[kernel_target]:-unknown}" "${INSTALL_PLAN[kernel_package]:-unknown}" >&2
@@ -1860,27 +1877,27 @@ main() {
         preflight_error 'installation confirmation' 'installation was cancelled; re-run with --non-interactive if appropriate.'
         return "$status"
     }
-    validate_install_plan || return $?
+    run_stage 'installation plan revalidation' validate_install_plan || return $?
     if [[ "${INSTALL_PLAN[kernel_status]}" != ready ]]; then
         if [[ "$PREPARE_KERNEL" != true ]]; then
             report_kernel_action_required
             return "$EXIT_KERNEL_ACTION_REQUIRED"
         fi
-        prepare_approved_kernel || return $?
+        run_stage 'kernel preparation' prepare_approved_kernel || return $?
         if [[ "$REBOOT_AFTER_KERNEL" == true ]]; then
             prepare_kernel_reboot || return $?
         fi
         report_kernel_reboot_required
         return "$EXIT_KERNEL_REBOOT_REQUIRED"
     fi
-    step_install_driver || return $?
-    step_prerequisites || return $?
-    step_install_rocm || return $?
-    step_ssh_config || return $?
-    step_configure_env || return $?
-    verify_installation || return $?
+    run_stage 'driver migration' step_install_driver || return $?
+    run_stage 'prerequisite installation' step_prerequisites || return $?
+    run_stage 'ROCm installation' step_install_rocm || return $?
+    run_stage 'SSH configuration' step_ssh_config || return $?
+    run_stage 'environment configuration' step_configure_env || return $?
+    run_stage 'ROCm verification' verify_installation || return $?
     if [[ "$REBOOT_REQUIRED" == true ]]; then
-        handle_reboot
+        run_stage 'post-install reboot' handle_reboot || return $?
     fi
 }
 
