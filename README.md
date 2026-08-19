@@ -281,6 +281,8 @@ os_policy=ubuntu-24.04.4
 method=apt
 artifact=amdrocm-core-sdk7.14-gfx1200
 driver_mode=dkms
+driver_status=ready
+action=rocm:apt
 kernel_status=ready
 kernel_target=6.8.*-generic
 kernel_package=linux-generic
@@ -295,10 +297,10 @@ explicit reviewed policy is added. Supplying multiple targets does not bypass
 that rule.
 
 The public plan labels are `gfx`, `gpu_class`, `gpu_source`, `os`, `os_policy`,
-`method`, `artifact`, `driver_mode`, `kernel_status`, `kernel_target`,
-`kernel_package`, and optional informational `product_name`. Collection values
-are rendered as sorted comma-separated fields; records containing commas are
-CSV-quoted.
+`method`, `artifact`, `driver_mode`, `driver_status`, `action`, `kernel_status`,
+`kernel_target`, `kernel_package`, and optional informational `product_name`.
+Actions are ordered records; collection values are rendered as sorted
+comma-separated fields and records containing commas are CSV-quoted.
 
 Inspect a kernel mismatch without changing the host:
 

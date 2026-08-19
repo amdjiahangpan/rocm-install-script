@@ -610,7 +610,7 @@ resolve_gpu_identity() {
 }
 
 install_plan_keys() {
-    printf '%s\n' gfxes gpu_classes gpu_source os_key os_description repo_slug method artifacts driver_mode kernel_status kernel_target kernel_package
+    printf '%s\n' gfxes gpu_classes gpu_source os_key os_description repo_slug method artifacts driver_mode driver_status actions kernel_status kernel_target kernel_package
 }
 
 reset_install_plan() {
@@ -637,12 +637,12 @@ resolve_plan_artifacts() {
 
 validate_install_plan() {
     local key gfxes normalized_gfxes gpu_classes expected_classes os_key os_description expected_os_description os_record repo_slug
-    local expected_artifacts expected_driver normalized_product_names kernel_policy kernel_target kernel_package kernel_status
+    local expected_artifacts expected_driver expected_driver_status expected_actions normalized_product_names kernel_policy kernel_target kernel_package kernel_status
 
-    [[ ${#INSTALL_PLAN[@]} -eq 12 || ${#INSTALL_PLAN[@]} -eq 13 ]] || return 1
+    [[ ${#INSTALL_PLAN[@]} -eq 14 || ${#INSTALL_PLAN[@]} -eq 15 ]] || return 1
     for key in "${!INSTALL_PLAN[@]}"; do
         case "$key" in
-            gfxes|gpu_classes|gpu_source|os_key|os_description|repo_slug|method|artifacts|driver_mode|kernel_status|kernel_target|kernel_package|product_names) ;;
+            gfxes|gpu_classes|gpu_source|os_key|os_description|repo_slug|method|artifacts|driver_mode|driver_status|actions|kernel_status|kernel_target|kernel_package|product_names) ;;
             *) return 1 ;;
         esac
     done
@@ -673,6 +673,10 @@ validate_install_plan() {
     [[ "${INSTALL_PLAN[kernel_package]}" == "$kernel_package" ]] || return 1
     kernel_status=$(resolve_kernel_status "$kernel_target" "$kernel_package" "${KERNEL_VERSION:-}") || return $?
     [[ "${INSTALL_PLAN[kernel_status]}" == "$kernel_status" ]] || return 1
+    expected_driver_status=$(resolve_driver_status "${INSTALL_PLAN[driver_mode]}" "$gfxes") || return 1
+    [[ "${INSTALL_PLAN[driver_status]}" == "$expected_driver_status" ]] || return 1
+    expected_actions=$(resolve_install_actions "$kernel_status" "$expected_driver_status" "${INSTALL_PLAN[method]}") || return 1
+    [[ "${INSTALL_PLAN[actions]}" == "$expected_actions" ]] || return 1
     if [[ -v 'INSTALL_PLAN[product_names]' ]]; then
         normalized_product_names=$(normalize_records "${INSTALL_PLAN[product_names]}") || return 1
         [[ "${INSTALL_PLAN[product_names]}" == "$normalized_product_names" ]] || return 1
@@ -680,7 +684,7 @@ validate_install_plan() {
 }
 
 resolve_install_plan() {
-    local os_key os_description os_record repo_slug artifacts driver_mode normalized_gfxes normalized_gpu_classes gpu_source
+    local os_key os_description os_record repo_slug artifacts driver_mode driver_status actions normalized_gfxes normalized_gpu_classes gpu_source
     local kernel_policy kernel_target kernel_package kernel_status
     local normalized_product_names=''
 
@@ -710,6 +714,8 @@ resolve_install_plan() {
     kernel_policy=$(kernel_policy_for "$driver_mode" "$os_key" "$normalized_gfxes") || return 1
     IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
     kernel_status=$(resolve_kernel_status "$kernel_target" "$kernel_package" "${KERNEL_VERSION:-}") || return $?
+    driver_status=$(resolve_driver_status "$driver_mode" "$normalized_gfxes") || return 1
+    actions=$(resolve_install_actions "$kernel_status" "$driver_status" "$INSTALL_METHOD") || return 1
     os_record=$(resolve_os_record "$os_key") || return 1
     repo_slug=${os_record#*|}
     artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$normalized_gfxes") || return 1
@@ -723,6 +729,8 @@ resolve_install_plan() {
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
         [driver_mode]="$driver_mode"
+        [driver_status]="$driver_status"
+        [actions]="$actions"
         [kernel_status]="$kernel_status"
         [kernel_target]="$kernel_target"
         [kernel_package]="$kernel_package"
@@ -736,12 +744,13 @@ resolve_install_plan() {
 }
 
 print_install_plan() {
-    local gfx_csv gpu_class_csv artifact_csv product_name_csv output
+    local gfx_csv gpu_class_csv artifact_csv action_csv product_name_csv output
 
     validate_install_plan || return 1
     gfx_csv=$(records_to_csv "${INSTALL_PLAN[gfxes]}") || return 1
     gpu_class_csv=$(records_to_csv "${INSTALL_PLAN[gpu_classes]}") || return 1
     artifact_csv=$(records_to_csv "${INSTALL_PLAN[artifacts]}") || return 1
+    action_csv=$(records_to_csv "${INSTALL_PLAN[actions]}") || return 1
     output=$'INSTALL PLAN\n'
     output+="gfx=${gfx_csv}"$'\n'
     output+="gpu_class=${gpu_class_csv}"$'\n'
@@ -751,6 +760,8 @@ print_install_plan() {
     output+="method=${INSTALL_PLAN[method]}"$'\n'
     output+="artifact=${artifact_csv}"$'\n'
     output+="driver_mode=${INSTALL_PLAN[driver_mode]}"$'\n'
+    output+="driver_status=${INSTALL_PLAN[driver_status]}"$'\n'
+    output+="action=${action_csv}"$'\n'
     output+="kernel_status=${INSTALL_PLAN[kernel_status]}"$'\n'
     output+="kernel_target=${INSTALL_PLAN[kernel_target]}"$'\n'
     output+="kernel_package=${INSTALL_PLAN[kernel_package]}"$'\n'
@@ -1361,11 +1372,12 @@ amdgpu_dkms_is_clean_3140() {
 }
 
 amdgpu_dkms_runtime_is_active() {
-    local expected_gfxes=${INSTALL_PLAN[gfxes]:-} module_path
+    local expected_gfxes=${1:-${INSTALL_PLAN[gfxes]:-}} module_path
     local pci_root=${AMDGPU_RUNTIME_PCI_ROOT:-${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}}
     local kfd_root=${AMDGPU_RUNTIME_KFD_ROOT:-${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}}
     local kfd_gfxes pci_records pci_gfxes='' record gfx gpu_class
     local device_path vendor device revision pci_class driver_path matched_devices=0
+    [[ $# -le 1 ]] || return 1
 
     expected_gfxes=$(normalize_gfxes "$expected_gfxes") || return 1
     if [[ -n ${AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE:-} ]]; then
@@ -1405,6 +1417,50 @@ amdgpu_dkms_runtime_is_active() {
         matched_devices=$((matched_devices + 1))
     done
     ((matched_devices > 0))
+}
+
+resolve_driver_status() {
+    local driver_mode=${1:-} gfxes=${2:-${INSTALL_PLAN[gfxes]:-}} detection_status
+
+    [[ $# -ge 1 && $# -le 2 ]] || return 1
+    case "$driver_mode" in inbox|dkms) ;; *) return 1 ;; esac
+    if detect_existing_amdgpu_dkms; then
+        detection_status=0
+    else
+        detection_status=$?
+    fi
+    [[ $detection_status -eq 0 || $detection_status -eq 1 ]] || return "$detection_status"
+    case "$driver_mode" in
+        inbox)
+            if [[ $detection_status -eq 0 ]]; then printf '%s\n' migration-required; else printf '%s\n' ready; fi
+            ;;
+        dkms)
+            if [[ $detection_status -eq 1 ]]; then
+                printf '%s\n' install-required
+            elif ! amdgpu_dkms_is_clean_3140; then
+                printf '%s\n' migration-required
+            elif amdgpu_dkms_runtime_is_active "$gfxes"; then
+                printf '%s\n' ready
+            else
+                printf '%s\n' reboot-required
+            fi
+            ;;
+    esac
+}
+
+resolve_install_actions() {
+    local kernel_status=${1:-} driver_status=${2:-} method=${3:-}
+
+    [[ $# -eq 3 ]] || return 1
+    case "$kernel_status" in ready|install-required|reboot-required) ;; *) return 1 ;; esac
+    case "$driver_status" in ready|install-required|migration-required|reboot-required) ;; *) return 1 ;; esac
+    case "$method" in apt|pip|tarball) ;; *) return 1 ;; esac
+    if [[ "$kernel_status" != ready ]]; then
+        printf 'kernel:%s\n' "$kernel_status"
+        return 0
+    fi
+    [[ "$driver_status" == ready ]] || printf 'driver:%s\n' "$driver_status"
+    printf 'rocm:%s\n' "$method"
 }
 
 confirm_dkms_cleanup() {

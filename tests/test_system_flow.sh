@@ -308,6 +308,23 @@ REBOOT_REQUIRED=false
 assert_success "a clean real AMDGPU 31.40 installation is left unchanged" migrate_driver
 assert_eq '' "$RECORDED_COMMANDS" "a clean AMDGPU 31.40 rerun performs no purge or install"
 
+assert_eq ready "$(resolve_driver_status dkms)" "clean active DKMS resolves ready"
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
+assert_eq reboot-required "$(resolve_driver_status dkms)" "clean inactive DKMS resolves reboot-required"
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
+MOCK_DKMS_PACKAGE_VERSION=31.30.1
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=31.30.1
+MOCK_DKMS_STATUS='amdgpu/31.30.1, 6.8.0-138-generic, x86_64: installed'
+assert_eq migration-required "$(resolve_driver_status dkms)" "old DKMS resolves migration-required"
+MOCK_DKMS_PACKAGE_VERSION=''
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
+MOCK_DKMS_STATUS=''
+assert_eq install-required "$(resolve_driver_status dkms)" "missing DKMS resolves install-required"
+assert_eq ready "$(resolve_driver_status inbox)" "inbox without DKMS residue resolves ready"
+assert_eq 'kernel:install-required' "$(resolve_install_actions install-required ready apt)" "kernel action blocks later plan actions"
+assert_eq $'driver:migration-required\nrocm:apt' "$(resolve_install_actions ready migration-required apt)" "driver migration precedes ROCm installation"
+assert_eq 'rocm:apt' "$(resolve_install_actions ready ready apt)" "ready host plans only ROCm installation"
+
 reset_test_state
 MOCK_DKMS_PACKAGE_VERSION=31.30.1
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=31.30.1
