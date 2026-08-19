@@ -35,6 +35,8 @@ gfx1152|gfx1152|device-gfx1152|therock-dist-linux-gfx1152-7.14.0.tar.gz
 gfx1153|gfx1153|device-gfx1153|therock-dist-linux-gfx1153-7.14.0.tar.gz
 gfx1103|gfx1103|device-gfx1103|therock-dist-linux-gfx110X-all-7.14.0.tar.gz'
 
+PCI_GPU_DATA='7590|*|gfx1200|radeon'
+
 declare -A ROCM_714_ARTIFACT_RECORDS=()
 declare -A ROCM_714_OS_RECORDS=(
     [ubuntu-24.04.4]='apt|ubuntu2404'
@@ -67,6 +69,8 @@ reset_defaults() {
     PACKAGE_PROFILE=full
     GPU_ARCHES=''
     GPU_PRODUCT_NAMES=''
+    GPU_CLASSES=''
+    GPU_DETECTION_SOURCE=''
     unset GPU_ARCH GPU_PRODUCT_NAME
     INSTALL_PLAN=()
     DRIVER_MODE=auto
@@ -346,6 +350,57 @@ normalize_pci_id() {
     printf '%04X\n' "$((16#$value))"
 }
 
+lookup_pci_gpu_record() {
+    local device=${1:-} revision=${2:-}
+    local row_device row_revision gfx gpu_class normalized_device normalized_revision fallback=''
+
+    [[ $# -eq 2 ]] || return 1
+    normalized_device=$(normalize_pci_id "$device") || return 1
+    normalized_revision=$(normalize_pci_id "$revision") || return 1
+    while IFS='|' read -r row_device row_revision gfx gpu_class; do
+        [[ -n "$row_device" ]] || continue
+        row_device=$(normalize_pci_id "$row_device") || return 1
+        [[ "$row_device" == "$normalized_device" ]] || continue
+        validate_artifact_gfx "$gfx" || return 1
+        case "$gpu_class" in ryzen|radeon|instinct) ;; *) return 1 ;; esac
+        if [[ "$row_revision" == '*' ]]; then
+            fallback="${gfx}|${gpu_class}"
+            continue
+        fi
+        row_revision=$(normalize_pci_id "$row_revision") || return 1
+        if [[ "$row_revision" == "$normalized_revision" ]]; then
+            printf '%s|%s\n' "$gfx" "$gpu_class"
+            return 0
+        fi
+    done <<< "$PCI_GPU_DATA"
+    [[ -n "$fallback" ]] || return 1
+    printf '%s\n' "$fallback"
+}
+
+detect_gpu_architectures_from_pci() {
+    local root=${1:-} device_path vendor device revision pci_class record
+    local -a records=()
+
+    [[ $# -eq 1 && -d "$root" ]] || return 1
+    for device_path in "$root"/*; do
+        [[ -d "$device_path" && -r "$device_path/vendor" && -r "$device_path/device" && -r "$device_path/revision" && -r "$device_path/class" ]] || continue
+        IFS= read -r vendor < "$device_path/vendor" || continue
+        IFS= read -r device < "$device_path/device" || continue
+        IFS= read -r revision < "$device_path/revision" || continue
+        IFS= read -r pci_class < "$device_path/class" || continue
+        vendor=$(normalize_pci_id "$vendor") || continue
+        [[ "$vendor" == 1002 ]] || continue
+        pci_class=$(trim_field "$pci_class")
+        pci_class=${pci_class#0x}
+        pci_class=${pci_class#0X}
+        [[ "$pci_class" =~ ^[[:xdigit:]]{6}$ && "${pci_class:0:2}" == 03 ]] || continue
+        record=$(lookup_pci_gpu_record "$device" "$revision") || continue
+        records+=("$record")
+    done
+    ((${#records[@]})) || return 1
+    normalize_records "$(printf '%s\n' "${records[@]}")"
+}
+
 lookup_amdgpu_product_name() {
     local ids_path=${1:-} device=${2:-} revision=${3:-}
     local row_device row_revision product
@@ -411,14 +466,45 @@ detect_gpu_product_names() {
 
 resolve_gpu_identity() {
     local requested_arches=${GPU_ARCHES:-}
+    local kfd_gfxes='' pci_records='' pci_gfxes='' pci_classes='' record gfx gpu_class
+    local kfd_status=1 pci_status=1
 
     GPU_ARCHES=''
+    GPU_CLASSES=''
     GPU_PRODUCT_NAMES=''
+    GPU_DETECTION_SOURCE=''
     [[ $# -eq 0 ]] || return 64
     if [[ -n "$requested_arches" ]]; then
         GPU_ARCHES=$(normalize_gfxes "$requested_arches") || return 64
+        GPU_DETECTION_SOURCE=explicit
     else
-        GPU_ARCHES=$(detect_gpu_architectures "${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}") || return 1
+        if kfd_gfxes=$(detect_gpu_architectures "${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}"); then
+            kfd_status=0
+        fi
+        if pci_records=$(detect_gpu_architectures_from_pci "${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}"); then
+            pci_status=0
+            while IFS='|' read -r gfx gpu_class; do
+                pci_gfxes+="${pci_gfxes:+$'\n'}${gfx}"
+                pci_classes+="${pci_classes:+$'\n'}${gpu_class}"
+            done <<< "$pci_records"
+            pci_gfxes=$(normalize_gfxes "$pci_gfxes") || return 1
+            pci_classes=$(normalize_records "$pci_classes") || return 1
+        fi
+        if [[ $kfd_status -eq 0 && $pci_status -eq 0 ]]; then
+            [[ "$kfd_gfxes" == "$pci_gfxes" ]] || return 1
+            GPU_ARCHES=$kfd_gfxes
+            GPU_CLASSES=$pci_classes
+            GPU_DETECTION_SOURCE=kfd+pci
+        elif [[ $kfd_status -eq 0 ]]; then
+            GPU_ARCHES=$kfd_gfxes
+            GPU_DETECTION_SOURCE=kfd
+        elif [[ $pci_status -eq 0 ]]; then
+            GPU_ARCHES=$pci_gfxes
+            GPU_CLASSES=$pci_classes
+            GPU_DETECTION_SOURCE=pci
+        else
+            return 1
+        fi
     fi
     GPU_PRODUCT_NAMES=$(detect_gpu_product_names "${GPU_DETECTION_DRM_ROOT:-/sys/class/drm}" "${AMDGPU_IDS_PATH:-/usr/share/libdrm/amdgpu.ids}" 2>/dev/null || true)
 }

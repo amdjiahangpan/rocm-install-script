@@ -12,12 +12,18 @@ heterogeneous_fixture="${ROOT_DIR}/tests/fixtures/gfx1151-gfx1201"
 heterogeneous_kfd_root="${heterogeneous_fixture}/kfd"
 heterogeneous_drm_root="${heterogeneous_fixture}/drm"
 heterogeneous_ids="${heterogeneous_fixture}/amdgpu.ids"
+rx9060_fixture="${ROOT_DIR}/tests/fixtures/rx-9060-xt"
+rx9060_kfd_root="${rx9060_fixture}/kfd"
+rx9060_pci_root="${rx9060_fixture}/pci"
+missing_pci_root="${TEST_TEMP_ROOT}/missing-pci-root"
 
 assert_eq "gfx1151" "$(kfd_gfx_target 110501)" "KFD 110501 decodes with AMD's decimal-field algorithm"
 assert_eq "gfx90a" "$(kfd_gfx_target 90010)" "KFD stepping is rendered as a hexadecimal gfx digit"
 assert_eq "gfx1151" "$(detect_gpu_architectures "$observed_kfd_root")" "observed KFD CPU node is ignored and GPU node resolves gfx1151"
 assert_eq "AMD Radeon 8060S Graphics" "$(detect_gpu_product_names "$observed_drm_root" "$observed_ids")" "observed empty sysfs product name falls back to exact libdrm IDs row"
 assert_eq $'gfx1151\ngfx1201' "$(detect_gpu_architectures "$heterogeneous_kfd_root")" "heterogeneous KFD nodes normalize all supported targets"
+assert_eq 'gfx1200|radeon' "$(lookup_pci_gpu_record 7590 c0)" "RX 9060 XT PCI ID resolves to gfx1200 Radeon"
+assert_eq 'gfx1200|radeon' "$(detect_gpu_architectures_from_pci "$rx9060_pci_root")" "PCI fallback recovers RX 9060 XT before KFD exists"
 assert_eq $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700' "$(detect_gpu_product_names "$heterogeneous_drm_root" "$heterogeneous_ids")" "every DRM card contributes its direct or exact-ID product name"
 strict_product_names=''
 if strict_product_names=$(bash -Eeuo pipefail -c '
@@ -31,6 +37,7 @@ else
 fi
 assert_eq $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700' "$strict_product_names" "strict-mode DRM product discovery emits both names"
 
+GPU_DETECTION_PCI_ROOT=$missing_pci_root
 GPU_DETECTION_KFD_ROOT=$observed_kfd_root
 GPU_DETECTION_DRM_ROOT=$observed_drm_root
 AMDGPU_IDS_PATH=$observed_ids
@@ -51,6 +58,32 @@ GPU_ARCHES=''
 assert_success "heterogeneous fixture resolves all architectures" resolve_gpu_identity
 assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "automatic discovery stores normalized architecture collection"
 assert_eq $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700' "$GPU_PRODUCT_NAMES" "automatic discovery stores normalized product-name collection"
+
+GPU_DETECTION_KFD_ROOT=$rx9060_kfd_root
+GPU_DETECTION_PCI_ROOT=$rx9060_pci_root
+GPU_DETECTION_DRM_ROOT="${TEST_TEMP_ROOT}/missing-drm-root"
+GPU_ARCHES=''
+assert_success "matching RX 9060 KFD and PCI records resolve one identity" resolve_gpu_identity
+assert_eq gfx1200 "$GPU_ARCHES" "RX 9060 identity stores gfx1200"
+assert_eq radeon "$GPU_CLASSES" "RX 9060 identity stores its Radeon class"
+assert_eq kfd+pci "$GPU_DETECTION_SOURCE" "matching KFD and PCI records report both sources"
+
+GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
+GPU_ARCHES=''
+assert_success "RX 9060 PCI fallback resolves when KFD is unavailable" resolve_gpu_identity
+assert_eq gfx1200 "$GPU_ARCHES" "PCI-only recovery stores gfx1200"
+assert_eq radeon "$GPU_CLASSES" "PCI-only recovery stores the Radeon class"
+assert_eq pci "$GPU_DETECTION_SOURCE" "PCI-only recovery identifies its source"
+
+disagreeing_kfd_root="${TEST_TEMP_ROOT}/kfd-disagreement"
+mkdir -p "${disagreeing_kfd_root}/0"
+printf 'cpu_cores_count 0\ngfx_target_version 120001\n' > "${disagreeing_kfd_root}/0/properties"
+GPU_DETECTION_KFD_ROOT=$disagreeing_kfd_root
+GPU_ARCHES=''
+assert_fails "KFD and PCI architecture disagreement fails closed" resolve_gpu_identity
+assert_eq "" "$GPU_ARCHES" "disagreement clears the architecture collection"
+assert_eq "" "$GPU_CLASSES" "disagreement clears the class collection"
+GPU_DETECTION_PCI_ROOT=$missing_pci_root
 
 GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
 GPU_ARCHES=$'gfx1201\ngfx1151'
