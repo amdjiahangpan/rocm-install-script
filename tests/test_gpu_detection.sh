@@ -115,6 +115,26 @@ printf 'cpu_cores_count 0\ngfx_target_version 110501\n' > "${unsupported_kfd_roo
 printf 'cpu_cores_count 0\ngfx_target_version 100001\n' > "${unsupported_kfd_root}/1/properties"
 assert_fails "an unsupported automatic target rejects the complete architecture collection" detect_gpu_architectures "$unsupported_kfd_root"
 
+GPU_DETECTION_KFD_ROOT=$unsupported_kfd_root
+GPU_DETECTION_PCI_ROOT=$rx9060_pci_root
+GPU_ARCHES=''
+assert_fails "present but invalid KFD topology cannot fall back to PCI" resolve_gpu_identity
+assert_eq "" "$GPU_ARCHES" "invalid KFD evidence clears the architecture collection"
+
+mixed_pci_root="${TEST_TEMP_ROOT}/pci-mixed-known-unknown"
+cp -a "$rx9060_pci_root/." "$mixed_pci_root/"
+mkdir -p "${mixed_pci_root}/0000:04:00.0"
+printf '0x1002\n' > "${mixed_pci_root}/0000:04:00.0/vendor"
+printf '0x9999\n' > "${mixed_pci_root}/0000:04:00.0/device"
+printf '0x01\n' > "${mixed_pci_root}/0000:04:00.0/revision"
+printf '0x030000\n' > "${mixed_pci_root}/0000:04:00.0/class"
+unknown_pci_output=''
+if unknown_pci_output=$(detect_gpu_architectures_from_pci "$mixed_pci_root" 2>&1); then
+    fail "one unknown AMD display device rejects the complete PCI inventory"
+fi
+assert_contains "$unknown_pci_output" "1002:9999" "unknown PCI failure reports the exact AMD device ID"
+GPU_DETECTION_PCI_ROOT=$missing_pci_root
+
 no_gpu_kfd_root="${TEST_TEMP_ROOT}/kfd-no-gpu"
 mkdir -p "${no_gpu_kfd_root}/0"
 printf 'cpu_cores_count 16\ngfx_target_version 0\n' > "${no_gpu_kfd_root}/0/properties"

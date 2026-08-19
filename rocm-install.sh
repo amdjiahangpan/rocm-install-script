@@ -404,6 +404,25 @@ detect_gpu_architectures() {
     normalize_gfxes "$(printf '%s\n' "${gfxes[@]}")"
 }
 
+kfd_gpu_nodes_present() {
+    local root=${1:-} properties_file line cpu_cores='' gfx_target_version=''
+
+    [[ $# -eq 1 && -d "$root" ]] || return 1
+    for properties_file in "$root"/*/properties; do
+        [[ -r "$properties_file" ]] || continue
+        cpu_cores=''
+        gfx_target_version=''
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            case "$line" in
+                cpu_cores_count\ *) cpu_cores=${line#cpu_cores_count } ;;
+                gfx_target_version\ *) gfx_target_version=${line#gfx_target_version } ;;
+            esac
+        done < "$properties_file"
+        [[ "$cpu_cores" == 0 && -n "$gfx_target_version" && "$gfx_target_version" != 0 ]] && return 0
+    done
+    return 1
+}
+
 normalize_pci_id() {
     local value=${1:-}
 
@@ -442,7 +461,7 @@ lookup_pci_gpu_record() {
 }
 
 detect_gpu_architectures_from_pci() {
-    local root=${1:-} device_path vendor device revision pci_class record
+    local root=${1:-} device_path vendor device revision pci_class record normalized_device normalized_revision
     local -a records=()
 
     [[ $# -eq 1 && -d "$root" ]] || return 1
@@ -458,7 +477,13 @@ detect_gpu_architectures_from_pci() {
         pci_class=${pci_class#0x}
         pci_class=${pci_class#0X}
         [[ "$pci_class" =~ ^[[:xdigit:]]{6}$ && "${pci_class:0:2}" == 03 ]] || continue
-        record=$(lookup_pci_gpu_record "$device" "$revision") || continue
+        if ! record=$(lookup_pci_gpu_record "$device" "$revision"); then
+            normalized_device=$(normalize_pci_id "$device" 2>/dev/null || printf '%s' "$device")
+            normalized_revision=$(normalize_pci_id "$revision" 2>/dev/null || printf '%s' "$revision")
+            printf 'Unsupported AMD display PCI device 1002:%s revision %s; provide the complete reviewed --gpu-arch set.\n' \
+                "$normalized_device" "$normalized_revision" >&2
+            return 1
+        fi
         records+=("$record")
     done
     ((${#records[@]})) || return 1
@@ -530,6 +555,8 @@ detect_gpu_product_names() {
 
 resolve_gpu_identity() {
     local requested_arches=${GPU_ARCHES:-}
+    local kfd_root=${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}
+    local pci_root=${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}
     local kfd_gfxes='' pci_records='' pci_gfxes='' pci_classes='' record gfx gpu_class
     local kfd_status=1 pci_status=1
 
@@ -542,10 +569,12 @@ resolve_gpu_identity() {
         GPU_ARCHES=$(normalize_gfxes "$requested_arches") || return 64
         GPU_DETECTION_SOURCE=explicit
     else
-        if kfd_gfxes=$(detect_gpu_architectures "${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}"); then
+        if kfd_gfxes=$(detect_gpu_architectures "$kfd_root"); then
             kfd_status=0
+        elif kfd_gpu_nodes_present "$kfd_root"; then
+            return 1
         fi
-        if pci_records=$(detect_gpu_architectures_from_pci "${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}"); then
+        if pci_records=$(detect_gpu_architectures_from_pci "$pci_root"); then
             pci_status=0
             while IFS='|' read -r gfx gpu_class; do
                 pci_gfxes+="${pci_gfxes:+$'\n'}${gfx}"
