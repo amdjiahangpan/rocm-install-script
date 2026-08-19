@@ -253,6 +253,9 @@ assert_fails "AMDGPU 31.40 without the running-kernel module is not clean" amdgp
 AMDGPU_DKMS_STATUS=$real_dkms_status
 AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION='1:31.30.0.0.31300000-older.24.04'
 assert_fails "AMDGPU 31.40 with mismatched firmware is not clean" amdgpu_dkms_is_clean_3140
+AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION='1:31x40.0.0.31400000-2364437.24.04'
+assert_fails "malformed AMDGPU firmware release text is not accepted as 31.40" amdgpu_dkms_is_clean_3140
+AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
 
 runtime_pci_root="${TEST_TEMP_ROOT}/runtime-pci"
 runtime_driver_root="${TEST_TEMP_ROOT}/drivers/amdgpu"

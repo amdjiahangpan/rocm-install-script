@@ -1337,7 +1337,7 @@ amdgpu_dkms_is_clean_3140() {
     package_version=${AMDGPU_DKMS_PACKAGE_VERSION#*:}
     firmware_version=${AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION#*:}
     package_pattern="^([0-9]+\\.[0-9]+\\.[0-9]+)\\.${AMDGPU_BUILD_ID}-(.+)$"
-    firmware_pattern="^${AMDGPU_RELEASE}\\.0\\.0\\.${AMDGPU_BUILD_ID}-(.+)$"
+    firmware_pattern="^31\\.40\\.0\\.0\\.${AMDGPU_BUILD_ID}-(.+)$"
     [[ "$package_version" =~ $package_pattern ]] || return 1
     driver_base=${BASH_REMATCH[1]}
     build_suffix=${BASH_REMATCH[2]}
