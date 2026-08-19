@@ -49,6 +49,8 @@ assert_eq "" "$GPU_ARCHES" "GPU architecture collection is empty by default"
 assert_eq "" "$GPU_PRODUCT_NAMES" "GPU product-name collection is empty by default"
 assert_eq "false" "$SKIP_SSH" "SSH setup is enabled by default"
 assert_eq "0" "$REBOOT_DELAY" "reboot is immediate by default"
+assert_eq "false" "$PREPARE_KERNEL" "kernel preparation is disabled by default"
+assert_eq "false" "$REBOOT_AFTER_KERNEL" "kernel reboot automation is disabled by default"
 
 GPU_ARCH=gfx1151
 GPU_PRODUCT_NAME='AMD Radeon RX 9060 XT'
@@ -82,6 +84,11 @@ assert_eq "true" "$SKIP_SSH" "SSH setup can be skipped"
 assert_eq "-1" "$REBOOT_DELAY" "reboot can be skipped"
 assert_eq "true" "$NON_INTERACTIVE" "non-interactive mode is retained"
 
+parse_succeeds --prepare-kernel --reboot-after-kernel
+assert_eq true "$PREPARE_KERNEL" "kernel preparation can be explicitly enabled"
+assert_eq true "$REBOOT_AFTER_KERNEL" "one-shot kernel reboot can be explicitly enabled"
+assert_fails "kernel reboot automation requires kernel preparation" parse_fails --reboot-after-kernel
+
 parse_succeeds --gpu-arch gfx1151 --gpu-arch gfx1100 --gpu-arch gfx1151
 assert_eq $'gfx1151\ngfx1100\ngfx1151' "$GPU_ARCHES" "repeated GPU architecture overrides append raw records"
 assert_fails "GPU architecture requires a value" parse_fails --gpu-arch
@@ -103,6 +110,8 @@ assert_fails "unknown options are rejected" parse_fails --distribution ubuntu
 assert_fails "verify and uninstall modes are exclusive" parse_fails --verify-only --uninstall
 assert_fails "root passwords containing a newline are rejected" parse_fails --root-password $'unsafe\npassword'
 assert_fails "root passwords containing a carriage return are rejected" parse_fails --root-password $'unsafe\rpassword'
+assert_fails "verify-only rejects kernel preparation" parse_fails --verify-only --prepare-kernel
+assert_fails "uninstall rejects kernel preparation" parse_fails --uninstall --prepare-kernel
 
 assert_status 1 "bash launcher preserves an invalid-option failure" run_invalid_option bash
 assert_eq "" "$ENTRYPOINT_STDOUT" "bash launcher keeps invalid-option diagnostics off stdout"
@@ -117,6 +126,8 @@ help_output=$(show_help)
 assert_contains "$help_output" "ROCm 7.14.0" "help names the fixed release"
 assert_contains "$help_output" "apt, pip, or tarball" "help lists the three install methods"
 assert_contains "$help_output" "may be repeated" "help documents repeated GPU architecture overrides"
+assert_contains "$help_output" "--prepare-kernel" "help documents explicit kernel preparation"
+assert_contains "$help_output" "--reboot-after-kernel" "help documents explicit one-shot kernel reboot"
 assert_not_contains "$help_output" "graphics" "help does not advertise graphics"
 assert_not_contains "$help_output" "runfile" "help does not advertise runfile"
 assert_not_contains "$help_output" "--version" "help does not advertise version selection"

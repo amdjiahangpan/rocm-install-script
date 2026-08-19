@@ -62,15 +62,15 @@ capture_main_output() {
 }
 
 assert_success "auto driver mode resolves to inbox" main --gpu-arch gfx1151 --non-interactive --skip-reboot
-assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:inbox\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "main prepares a ready kernel before migrating the driver"
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\ndriver:inbox\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "ready-kernel main flow proceeds directly to driver migration"
 FLOW=""
 assert_success "explicit DKMS driver mode reaches the driver step" main --gpu-arch gfx1201 --driver-mode dkms --non-interactive --skip-reboot
-assert_eq $'root\nsystem\ngpu:gfx1201\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:dkms\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "DKMS migration follows ready-kernel preparation"
+assert_eq $'root\nsystem\ngpu:gfx1201\nplan\nprint-plan\nconfirm\ndriver:dkms\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "DKMS migration follows ready-kernel validation"
 
 FLOW=""
 assert_success "repeated Radeon GPU architectures create one normalized lifecycle" main --gpu-arch gfx1201 --gpu-arch gfx1200 --gpu-arch gfx1201 --non-interactive --skip-reboot
 assert_eq $'gfx1200\ngfx1201' "$GPU_ARCHES" "repeated Radeon GPU architectures normalize before planning"
-assert_eq $'root\nsystem\ngpu:gfx1200,gfx1201\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:dkms\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "multi-GFX main flow runs every ready-kernel lifecycle phase once in order"
+assert_eq $'root\nsystem\ngpu:gfx1200,gfx1201\nplan\nprint-plan\nconfirm\ndriver:dkms\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "multi-GFX main flow runs every ready-kernel lifecycle phase once in order"
 
 FLOW=""
 assert_success "verify-only normalizes repeated GPU architectures" main --verify-only --method apt --gpu-arch gfx1201 --gpu-arch gfx1151 --gpu-arch gfx1201
@@ -179,11 +179,19 @@ resolve_install_plan() {
     record_step plan
 }
 confirm_install_plan() { record_step confirm; }
-prepare_approved_kernel() { record_step "kernel:${INSTALL_PLAN[kernel_status]}"; }
-handle_reboot() { record_step reboot; }
+prepare_approved_kernel() { fail "default kernel mismatch must not prepare a kernel"; }
+handle_reboot() { fail "default kernel mismatch must not reboot"; }
 FLOW=""
-assert_success "kernel preparation stops the lifecycle before driver or ROCm work" main --gpu-arch gfx1151 --non-interactive --skip-reboot
-assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\nkernel:install-required\nreboot' "${FLOW%$'\n'}" "non-ready kernel lifecycle only prepares and reboots"
+assert_status 20 "default kernel mismatch requires explicit action" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "current kernel" "kernel mismatch reports the running kernel"
+assert_contains "$MAIN_OUTPUT" "6.14.*-oem" "kernel mismatch reports the target kernel"
+assert_contains "$MAIN_OUTPUT" "linux-oem-6.14" "kernel mismatch reports the approved metapackage"
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm' "${FLOW%$'\n'}" "default mismatch stops before every mutation"
+
+prepare_approved_kernel() { record_step "kernel:${INSTALL_PLAN[kernel_status]}"; }
+FLOW=""
+assert_status 21 "explicit kernel preparation reports pending reboot" capture_main_output --gpu-arch gfx1151 --prepare-kernel --non-interactive --skip-reboot
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\nkernel:install-required' "${FLOW%$'\n'}" "explicit preparation stops after preparing the target kernel"
 
 MOCK_DKMS_PACKAGE_VERSION=''
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''

@@ -19,6 +19,9 @@ AMDGPU_REPOSITORY=https://repo.radeon.com/amdgpu/${AMDGPU_RELEASE}/ubuntu
 AMDGPU_GPG_KEY_URL=https://repo.radeon.com/rocm/rocm.gpg.key
 SUPPORTED_OS_KEYS=ubuntu-24.04.4,ubuntu-26.04
 KERNEL_MIN_FREE_KIB=524288
+EXIT_KERNEL_ACTION_REQUIRED=20
+EXIT_KERNEL_REBOOT_REQUIRED=21
+EXIT_KERNEL_REBOOT_FAILED=22
 
 ARTIFACT_DATA='gfx950|gfx950|device-gfx950|therock-dist-linux-gfx950-dcgpu-7.14.0.tar.gz
 gfx942|gfx942|device-gfx942|therock-dist-linux-gfx94X-dcgpu-7.14.0.tar.gz
@@ -77,6 +80,8 @@ reset_defaults() {
     SKIP_SSH=false
     ROOT_PASSWORD=''
     REBOOT_DELAY=0
+    PREPARE_KERNEL=false
+    REBOOT_AFTER_KERNEL=false
     VERIFY_ONLY=false
     UNINSTALL=false
     NON_INTERACTIVE=false
@@ -917,6 +922,172 @@ prepare_approved_kernel() {
     esac
 }
 
+kernel_pattern_for_target() {
+    case "${1:-}" in
+        '6.14.*-oem') printf '%s\n' 'vmlinuz-6.14.*-oem' ;;
+        '6.8.*-generic') printf '%s\n' 'vmlinuz-6.8.*-generic' ;;
+        '7.0.*-generic') printf '%s\n' 'vmlinuz-7.0.*-generic' ;;
+        *) return 1 ;;
+    esac
+}
+
+latest_kernel_release_for_target() {
+    local kernel_target=${1:-} boot_dir=${KERNEL_BOOT_DIR:-/boot} pattern image release latest=''
+    local -a releases=()
+
+    [[ $# -eq 1 && -d "$boot_dir" ]] || return 1
+    pattern=$(kernel_pattern_for_target "$kernel_target") || return 1
+    for image in "$boot_dir"/$pattern; do
+        [[ -f "$image" && -r "$image" && -s "$image" ]] || continue
+        release=${image##*/vmlinuz-}
+        kernel_release_matches_target "$kernel_target" "$release" || continue
+        releases+=("$release")
+    done
+    ((${#releases[@]})) || return 1
+    while IFS= read -r release || [[ -n "$release" ]]; do
+        latest=$release
+    done < <(printf '%s\n' "${releases[@]}" | LC_ALL=C sort -V)
+    [[ -n "$latest" ]] || return 1
+    printf '%s\n' "$latest"
+}
+
+resolve_grub_kernel_entry() {
+    local kernel_target=${1:-} grub_config=${GRUB_CONFIG_FILE:-/boot/grub/grub.cfg}
+    local release line submenu_found=false entry_found=false
+
+    [[ $# -eq 1 && -r "$grub_config" ]] || return 1
+    release=$(latest_kernel_release_for_target "$kernel_target") || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" != *"submenu 'Advanced options for Ubuntu'"* ]] || submenu_found=true
+        [[ "$line" != *"menuentry 'Ubuntu, with Linux ${release}'"* ]] || entry_found=true
+    done < "$grub_config"
+    [[ "$submenu_found" == true && "$entry_found" == true ]] || return 1
+    printf 'Advanced options for Ubuntu>Ubuntu, with Linux %s\n' "$release"
+}
+
+pending_kernel_state_path() {
+    local state_root=${INSTALLER_STATE_ROOT:-/var/lib/rocm-installer}
+
+    [[ "$state_root" == /* ]] || return 1
+    printf '%s/pending-kernel\n' "${state_root%/}"
+}
+
+read_boot_id() {
+    local boot_id_file=${BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id} boot_id
+
+    [[ -r "$boot_id_file" ]] || return 1
+    IFS= read -r boot_id < "$boot_id_file" || return 1
+    boot_id=$(trim_field "$boot_id")
+    [[ -n "$boot_id" && "$boot_id" != *'|'* ]] || return 1
+    printf '%s\n' "$boot_id"
+}
+
+write_pending_kernel_state() {
+    local target=${1:-} entry=${2:-} boot_id=${3:-} attempts=${4:-}
+    local state_root=${INSTALLER_STATE_ROOT:-/var/lib/rocm-installer} state_path temporary
+
+    [[ $# -eq 4 && "$state_root" == /* && -n "$entry" && "$entry" != *$'\n'* && "$entry" != *$'\r'* && -n "$boot_id" && "$boot_id" != *$'\n'* && "$attempts" =~ ^[0-9]+$ ]] || return 1
+    kernel_pattern_for_target "$target" >/dev/null || return 1
+    state_path=$(pending_kernel_state_path) || return 1
+    install -d -m 0700 "$state_root" || return $?
+    temporary=$(mktemp "${state_root%/}/.pending-kernel.XXXXXX") || return $?
+    if printf 'target=%s\nentry=%s\nboot_id=%s\nattempts=%s\n' "$target" "$entry" "$boot_id" "$attempts" > "$temporary" \
+        && chmod 0600 "$temporary" \
+        && mv -f "$temporary" "$state_path"; then
+        return 0
+    fi
+    rm -f "$temporary"
+    return 1
+}
+
+read_pending_kernel_state() {
+    local state_path key value seen_target=false seen_entry=false seen_boot_id=false seen_attempts=false
+
+    PENDING_KERNEL_TARGET=''
+    PENDING_KERNEL_ENTRY=''
+    PENDING_KERNEL_BOOT_ID=''
+    PENDING_KERNEL_ATTEMPTS=''
+    state_path=$(pending_kernel_state_path) || return 1
+    [[ -r "$state_path" ]] || return 1
+    while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
+        case "$key" in
+            target) [[ "$seen_target" == false ]] || return 1; PENDING_KERNEL_TARGET=$value; seen_target=true ;;
+            entry) [[ "$seen_entry" == false ]] || return 1; PENDING_KERNEL_ENTRY=$value; seen_entry=true ;;
+            boot_id) [[ "$seen_boot_id" == false ]] || return 1; PENDING_KERNEL_BOOT_ID=$value; seen_boot_id=true ;;
+            attempts) [[ "$seen_attempts" == false ]] || return 1; PENDING_KERNEL_ATTEMPTS=$value; seen_attempts=true ;;
+            *) return 1 ;;
+        esac
+    done < "$state_path"
+    [[ "$seen_target" == true && "$seen_entry" == true && "$seen_boot_id" == true && "$seen_attempts" == true ]] || return 1
+    kernel_pattern_for_target "$PENDING_KERNEL_TARGET" >/dev/null || return 1
+    [[ -n "$PENDING_KERNEL_ENTRY" && -n "$PENDING_KERNEL_BOOT_ID" && "$PENDING_KERNEL_ATTEMPTS" =~ ^[0-9]+$ ]] || return 1
+}
+
+clear_pending_kernel_state() {
+    local state_path
+
+    state_path=$(pending_kernel_state_path) || return 1
+    rm -f "$state_path"
+}
+
+reconcile_pending_kernel_state() {
+    local state_path current_boot_id
+
+    state_path=$(pending_kernel_state_path) || return 1
+    [[ -e "$state_path" ]] || return 0
+    read_pending_kernel_state || return 1
+    if kernel_release_matches_target "$PENDING_KERNEL_TARGET" "${KERNEL_VERSION:-}"; then
+        clear_pending_kernel_state
+        return $?
+    fi
+    current_boot_id=$(read_boot_id) || return 1
+    if [[ "$current_boot_id" == "$PENDING_KERNEL_BOOT_ID" ]]; then
+        printf 'ROCm kernel reboot is pending: current kernel=%s, target kernel=%s, boot entry=%s.\n' \
+            "${KERNEL_VERSION:-unknown}" "$PENDING_KERNEL_TARGET" "$PENDING_KERNEL_ENTRY" >&2
+        return "$EXIT_KERNEL_REBOOT_REQUIRED"
+    fi
+    printf 'ROCm kernel boot failed: system rebooted but current kernel=%s does not match target kernel=%s. Automatic reboot will not be attempted again; select boot entry %s manually.\n' \
+        "${KERNEL_VERSION:-unknown}" "$PENDING_KERNEL_TARGET" "$PENDING_KERNEL_ENTRY" >&2
+    return "$EXIT_KERNEL_REBOOT_FAILED"
+}
+
+configure_grub_next_entry() {
+    local entry=${1:-} grub_env=${GRUB_ENV_FILE:-/boot/grub/grubenv} grub_output line next_entry='' next_entry_count=0
+
+    [[ $# -eq 1 && -n "$entry" ]] || return 1
+    run_cmd grub-reboot "$entry" || return $?
+    grub_output=$(capture_cmd grub-editenv "$grub_env" list) || return $?
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == next_entry=* ]] || continue
+        next_entry_count=$((next_entry_count + 1))
+        next_entry=${line#next_entry=}
+    done <<< "$grub_output"
+    [[ $next_entry_count -eq 1 && "$next_entry" == "$entry" ]]
+}
+
+confirm_kernel_reboot() {
+    local answer
+
+    [[ "${NON_INTERACTIVE:-false}" != true ]] || return 0
+    read -r -p 'Reboot once into the reviewed kernel entry? [y/N] ' answer || return 1
+    [[ "$answer" == y || "$answer" == Y || "$answer" == yes || "$answer" == YES ]]
+}
+
+prepare_kernel_reboot() {
+    local entry boot_id
+
+    [[ "${PREPARE_KERNEL:-false}" == true && "${REBOOT_AFTER_KERNEL:-false}" == true ]] || return 1
+    entry=$(resolve_grub_kernel_entry "${INSTALL_PLAN[kernel_target]:-}") || return 1
+    printf 'ROCm will select one boot attempt: current kernel=%s, target kernel=%s, boot entry=%s.\n' \
+        "${KERNEL_VERSION:-unknown}" "${INSTALL_PLAN[kernel_target]:-unknown}" "$entry" >&2
+    confirm_kernel_reboot || return 1
+    configure_grub_next_entry "$entry" || return 1
+    boot_id=$(read_boot_id) || return 1
+    write_pending_kernel_state "${INSTALL_PLAN[kernel_target]}" "$entry" "$boot_id" 1 || return 1
+    handle_reboot || return $?
+    return "$EXIT_KERNEL_REBOOT_REQUIRED"
+}
+
 write_managed_file() {
     local path=$1 mode=$2 content=$3
 
@@ -1533,6 +1704,8 @@ Options:
   --root-password PASS     Set the root password during installation
   --skip-reboot            Skip reboot after installation
   --reboot-delay MIN       Delay reboot for 0 to 120 minutes
+  --prepare-kernel         Install the reviewed kernel when it is not running
+  --reboot-after-kernel    Select the reviewed kernel for one reboot attempt
   --verify-only            Verify an existing installation
   --uninstall              Remove an existing installation
   --non-interactive        Run without prompts
@@ -1584,6 +1757,14 @@ parse_args() {
                 REBOOT_DELAY=$2
                 shift 2
                 ;;
+            --prepare-kernel)
+                PREPARE_KERNEL=true
+                shift
+                ;;
+            --reboot-after-kernel)
+                REBOOT_AFTER_KERNEL=true
+                shift
+                ;;
             --verify-only)
                 VERIFY_ONLY=true
                 shift
@@ -1608,11 +1789,23 @@ parse_args() {
             *) return 1 ;;
         esac
     done
-    [[ "$VERIFY_ONLY" != true || "$UNINSTALL" != true ]]
+    [[ "$VERIFY_ONLY" != true || "$UNINSTALL" != true ]] || return 1
+    [[ "$REBOOT_AFTER_KERNEL" != true || "$PREPARE_KERNEL" == true ]] || return 1
+    [[ "$PREPARE_KERNEL" != true || ( "$VERIFY_ONLY" != true && "$UNINSTALL" != true ) ]]
 }
 
 preflight_error() {
     printf 'ROCm preflight failed during %s: %s\n' "$1" "$2" >&2
+}
+
+report_kernel_action_required() {
+    printf 'ROCm kernel action required: current kernel=%s, target kernel=%s, package=%s. Re-run with --prepare-kernel to install the reviewed kernel.\n' \
+        "${KERNEL_VERSION:-unknown}" "${INSTALL_PLAN[kernel_target]:-unknown}" "${INSTALL_PLAN[kernel_package]:-unknown}" >&2
+}
+
+report_kernel_reboot_required() {
+    printf 'ROCm kernel reboot required: current kernel=%s, target kernel=%s, package=%s. Select the target kernel, reboot, verify uname -r, and run the installer again.\n' \
+        "${KERNEL_VERSION:-unknown}" "${INSTALL_PLAN[kernel_target]:-unknown}" "${INSTALL_PLAN[kernel_package]:-unknown}" >&2
 }
 
 main() {
@@ -1642,6 +1835,7 @@ main() {
         do_uninstall
         return $?
     fi
+    reconcile_pending_kernel_state || return $?
     resolve_gpu_identity || {
         status=$?
         preflight_error 'GPU/KFD discovery' 'check the KFD topology or provide a supported --gpu-arch value.'
@@ -1667,10 +1861,17 @@ main() {
         return "$status"
     }
     validate_install_plan || return $?
-    prepare_approved_kernel || return $?
     if [[ "${INSTALL_PLAN[kernel_status]}" != ready ]]; then
-        handle_reboot
-        return $?
+        if [[ "$PREPARE_KERNEL" != true ]]; then
+            report_kernel_action_required
+            return "$EXIT_KERNEL_ACTION_REQUIRED"
+        fi
+        prepare_approved_kernel || return $?
+        if [[ "$REBOOT_AFTER_KERNEL" == true ]]; then
+            prepare_kernel_reboot || return $?
+        fi
+        report_kernel_reboot_required
+        return "$EXIT_KERNEL_REBOOT_REQUIRED"
     fi
     step_install_driver || return $?
     step_prerequisites || return $?

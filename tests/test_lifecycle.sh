@@ -520,24 +520,28 @@ MOCK_DKMS_STATUS=''
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=''
 rm -rf "$KERNEL_BOOT_DIR"
 mkdir -p "$KERNEL_BOOT_DIR"
-assert_success "mismatched Ryzen kernel installs the approved package then stops before driver or ROCm" run_mocked_main apt --gpu-arch gfx1151
+assert_status 20 "mismatched Ryzen kernel requires explicit preparation" run_mocked_main apt --gpu-arch gfx1151
 assert_eq install-required "${INSTALL_PLAN[kernel_status]}" "mismatched kernel plan records installation requirement"
-assert_contains "$RECORDED_COMMANDS" "apt-get --yes --no-remove --install-recommends install linux-oem-6.14" "kernel preparation installs the approved OEM metapackage"
+assert_eq '' "$RECORDED_COMMANDS" "default kernel mismatch performs no mutation"
+assert_fails "default mismatch does not create an OEM boot image" test -e "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
+
+reset_test_state
+assert_status 21 "explicit kernel preparation installs the approved package then stops" run_mocked_main apt --gpu-arch gfx1151 --prepare-kernel
+assert_contains "$RECORDED_COMMANDS" "apt-get --yes --no-remove --install-recommends install linux-oem-6.14" "explicit kernel preparation installs the approved OEM metapackage"
 assert_not_contains "$RECORDED_COMMANDS" "curl ca-certificates gnupg pciutils" "kernel preparation stops before prerequisites"
 assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk7.14" "kernel preparation stops before ROCm installation"
-assert_not_contains "$RECORDED_COMMANDS" "reboot" "skip reboot suppresses the reboot command after kernel preparation"
+assert_not_contains "$RECORDED_COMMANDS" $'reboot\n' "kernel preparation does not reboot implicitly"
 assert_success "kernel preparation verifies a nonempty OEM boot image before stopping" test -s "${KERNEL_BOOT_DIR}/vmlinuz-6.14.0-1020-oem"
 
 MOCK_KERNEL_METAPACKAGE_INSTALLED=linux-oem-6.14
 reset_test_state
-assert_success "installed target metapackage waits for reboot without APT work" run_mocked_main apt --gpu-arch gfx1151
+assert_status 20 "installed target metapackage still requires explicit kernel action" run_mocked_main apt --gpu-arch gfx1151
 assert_eq reboot-required "${INSTALL_PLAN[kernel_status]}" "installed target metapackage plan records reboot requirement"
-assert_eq '' "$RECORDED_COMMANDS" "reboot-required kernel status does no APT, driver, or ROCm work when reboot is skipped"
+assert_eq '' "$RECORDED_COMMANDS" "default reboot-required status performs no APT, driver, ROCm, or reboot work"
 
 reset_test_state
-main --method apt --non-interactive --skip-ssh --gpu-arch gfx1151 > "${TEST_TEMP_ROOT}/kernel-reboot-output"
-assert_contains "$RECORDED_COMMANDS" "reboot" "reboot-required kernel status uses the existing reboot handler"
-assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk7.14" "reboot-required kernel status still stops before ROCm"
+assert_status 21 "explicit preparation acknowledges an already installed target kernel" run_mocked_main apt --gpu-arch gfx1151 --prepare-kernel
+assert_eq '' "$RECORDED_COMMANDS" "already installed target kernel requires no APT or reboot command"
 MOCK_OS_VERSION=26.04
 MOCK_KERNEL_VERSION=7.0.0-generic
 MOCK_KERNEL_METAPACKAGE_INSTALLED=''
