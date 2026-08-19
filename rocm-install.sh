@@ -9,6 +9,7 @@ SCRIPT_VERSION=3.0.0
 ROCM_VERSION=7.14.0
 ROCM_SERIES=7.14
 AMDGPU_RELEASE=31.40
+AMDGPU_BUILD_ID=31400000
 ROCM_PACKAGES_ROOT=https://repo.amd.com/rocm/packages-multi-arch
 ROCM_GPG_KEY_URL=${ROCM_PACKAGES_ROOT}/gpg/rocm.gpg
 ROCM_WHL_INDEX=https://repo.amd.com/rocm/whl-multi-arch/
@@ -1106,12 +1107,35 @@ detect_existing_amdgpu_dkms() {
 }
 
 amdgpu_dkms_is_clean_3140() {
-    local line
+    local package_version firmware_version package_pattern firmware_pattern
+    local driver_base build_suffix expected_module_version line module_field kernel_field status_field
+    local status_count=0 running_kernel_found=false
 
-    [[ -z "$AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION" && "$AMDGPU_DKMS_PACKAGE_VERSION" == *"${AMDGPU_RELEASE}"* && -n "$AMDGPU_DKMS_STATUS" ]] || return 1
+    [[ -n "$AMDGPU_DKMS_PACKAGE_VERSION" && -n "$AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION" && -n "$AMDGPU_DKMS_STATUS" && -n "${KERNEL_VERSION:-}" ]] || return 1
+    package_version=${AMDGPU_DKMS_PACKAGE_VERSION#*:}
+    firmware_version=${AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION#*:}
+    package_pattern="^([0-9]+\\.[0-9]+\\.[0-9]+)\\.${AMDGPU_BUILD_ID}-(.+)$"
+    firmware_pattern="^${AMDGPU_RELEASE}\\.0\\.0\\.${AMDGPU_BUILD_ID}-(.+)$"
+    [[ "$package_version" =~ $package_pattern ]] || return 1
+    driver_base=${BASH_REMATCH[1]}
+    build_suffix=${BASH_REMATCH[2]}
+    [[ "$firmware_version" =~ $firmware_pattern ]] || return 1
+    [[ "${BASH_REMATCH[1]}" == "$build_suffix" ]] || return 1
+    expected_module_version="${driver_base}-${build_suffix}"
     while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ "${line,,}" =~ ^amdgpu/31\.40([.,[:space:]]|$) ]] || return 1
+        [[ -n "$line" ]] || return 1
+        module_field=${line%%,*}
+        [[ "$module_field" == "amdgpu/${expected_module_version}" ]] || return 1
+        kernel_field=${line#*,}
+        kernel_field=${kernel_field%%,*}
+        kernel_field=$(trim_field "$kernel_field")
+        status_field=${line##*:}
+        status_field=$(trim_field "$status_field")
+        [[ "$status_field" == installed* ]] || return 1
+        status_count=$((status_count + 1))
+        [[ "$kernel_field" != "$KERNEL_VERSION" ]] || running_kernel_found=true
     done <<< "$AMDGPU_DKMS_STATUS"
+    ((status_count > 0)) && [[ "$running_kernel_found" == true ]]
 }
 
 confirm_dkms_cleanup() {
@@ -1204,6 +1228,8 @@ migrate_driver() {
             [[ $detection_status -eq 1 ]] || remove_existing_amdgpu_dkms || return $?
             configure_amdgpu_3140_repository || return $?
             install_amdgpu_3140 || return $?
+            detect_existing_amdgpu_dkms || return $?
+            amdgpu_dkms_is_clean_3140 || return 1
             REBOOT_REQUIRED=true
             ;;
     esac

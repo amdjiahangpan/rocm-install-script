@@ -214,7 +214,36 @@ run_cmd() {
         done
         MOCK_DKMS_STATUS=''
     fi
+    if [[ "$1 ${2:-} ${3:-} ${4:-}" == 'apt-get install --yes amdgpu-dkms' ]]; then
+        MOCK_DKMS_PACKAGE_VERSION=$real_dkms_package_version
+        MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
+        MOCK_DKMS_STATUS=$real_dkms_status
+    fi
 }
+
+real_dkms_package_version='1:6.19.14.31400000-2364437.24.04'
+real_dkms_firmware_version='1:31.40.0.0.31400000-2364437.24.04'
+real_dkms_status=$'amdgpu/6.19.14-2364437.24.04, 6.8.0-138-generic, x86_64: installed\namdgpu/6.19.14-2364437.24.04, 7.0.0-28-generic, x86_64: installed'
+AMDGPU_DKMS_PACKAGE_VERSION=$real_dkms_package_version
+AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
+AMDGPU_DKMS_STATUS=$real_dkms_status
+KERNEL_VERSION=6.8.0-138-generic
+assert_success "real AMDGPU 31.40 package and DKMS metadata is clean" amdgpu_dkms_is_clean_3140
+AMDGPU_DKMS_STATUS='amdgpu/6.19.14-2364437.24.04, 7.0.0-28-generic, x86_64: installed'
+assert_fails "AMDGPU 31.40 without the running-kernel module is not clean" amdgpu_dkms_is_clean_3140
+AMDGPU_DKMS_STATUS=$real_dkms_status
+AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION='1:31.30.0.0.31300000-older.24.04'
+assert_fails "AMDGPU 31.40 with mismatched firmware is not clean" amdgpu_dkms_is_clean_3140
+
+reset_test_state
+MOCK_DKMS_PACKAGE_VERSION=$real_dkms_package_version
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
+MOCK_DKMS_STATUS=$real_dkms_status
+DKMS_CLEANUP_POLICY=never
+NON_INTERACTIVE=true
+INSTALL_PLAN=([driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+assert_success "a clean real AMDGPU 31.40 installation is left unchanged" migrate_driver
+assert_eq '' "$RECORDED_COMMANDS" "a clean AMDGPU 31.40 rerun performs no purge or install"
 
 reset_test_state
 MOCK_DKMS_PACKAGE_VERSION=31.30.1

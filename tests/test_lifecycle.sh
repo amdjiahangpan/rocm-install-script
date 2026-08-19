@@ -305,6 +305,8 @@ assert_contains "$RECORDED_COMMANDS" "udevadm control --reload-rules" "purge fai
 MOCK_DKMS_PACKAGE_VERSION=""
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=""
 MOCK_DKMS_STATUS=""
+REAL_DKMS_PACKAGE_VERSION='1:6.19.14.31400000-2364437.24.04'
+REAL_DKMS_FIRMWARE_VERSION='1:31.40.0.0.31400000-2364437.24.04'
 MOCK_KERNEL_VERSION=7.0.0-generic
 MOCK_OS_VERSION=26.04
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
@@ -367,6 +369,12 @@ lifecycle_run_cmd() {
         done
         MOCK_DKMS_STATUS=""
     fi
+    if [[ "$1 ${2:-} ${3:-} ${4:-}" == 'apt-get install --yes amdgpu-dkms' ]]; then
+        MOCK_DKMS_PACKAGE_VERSION=$REAL_DKMS_PACKAGE_VERSION
+        MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$REAL_DKMS_FIRMWARE_VERSION
+        MOCK_DKMS_STATUS="amdgpu/6.19.14-2364437.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
+        MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
+    fi
     if [[ "$1 ${2:-} ${3:-} ${4:-} ${5:-} ${6:-}" == 'apt-get --yes --no-remove --install-recommends install linux-oem-6.14' ]]; then
         MOCK_KERNEL_METAPACKAGE_INSTALLED=linux-oem-6.14
         mkdir -p "$KERNEL_BOOT_DIR"
@@ -421,6 +429,9 @@ assert_eq "$multi_packages" "${INSTALL_PLAN[artifacts]}" "multi-GFX APT plan con
 assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk7.14-gfx1200 amdrocm-core-sdk7.14-gfx1201" "multi-GFX main installs both SDK packages in one APT transaction"
 assert_eq "1" "$(recorded_command_count "apt-get install --yes amdrocm-core-sdk7.14" "$RECORDED_COMMANDS")" "multi-GFX main performs one ROCm SDK APT transaction"
 assert_not_contains "$RECORDED_COMMANDS" "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "multi-GFX APT does not select a tarball artifact"
+MOCK_DKMS_PACKAGE_VERSION=''
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
+MOCK_DKMS_STATUS=''
 
 heterogeneous_fixture="${ROOT_DIR}/tests/fixtures/gfx1151-gfx1201"
 GPU_DETECTION_KFD_ROOT="${heterogeneous_fixture}/kfd"
