@@ -109,13 +109,14 @@ dpkg-query() {
 }
 
 os_release_fixture="${TEST_TEMP_ROOT}/os-release"
-printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "$os_release_fixture"
+printf 'ID=ubuntu\nVERSION_ID="24.04"\nPRETTY_NAME="Ubuntu 24.04.2 LTS"\n' > "$os_release_fixture"
 OS_RELEASE_FILE=$os_release_fixture
 SYSTEM_ARCH_OVERRIDE=x86_64
 SYSTEM_KERNEL_OVERRIDE=6.14.0-1020-oem
 assert_success "Ubuntu 24.04 x86_64 is detected from os-release" detect_system
 assert_eq ubuntu "$OS_ID" "system detection records Ubuntu"
 assert_eq 24.04 "$OS_VERSION" "system detection records Ubuntu 24.04"
+assert_eq 'Ubuntu 24.04.2 LTS' "$OS_DESCRIPTION" "system detection preserves the real Ubuntu release description"
 printf 'ID=ubuntu\nVERSION_ID="26.04"\n' > "$os_release_fixture"
 SYSTEM_KERNEL_OVERRIDE=7.0.0-generic
 assert_success "Ubuntu 26.04 x86_64 is detected from os-release" detect_system

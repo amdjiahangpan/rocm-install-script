@@ -88,6 +88,7 @@ reset_defaults() {
     GPU_PRODUCT_NAMES=''
     GPU_CLASSES=''
     GPU_DETECTION_SOURCE=''
+    OS_DESCRIPTION=''
     unset GPU_ARCH GPU_PRODUCT_NAME
     INSTALL_PLAN=()
     DRIVER_MODE=auto
@@ -575,7 +576,7 @@ resolve_gpu_identity() {
 }
 
 install_plan_keys() {
-    printf '%s\n' gfxes gpu_classes gpu_source os_key repo_slug method artifacts driver_mode kernel_status kernel_target kernel_package
+    printf '%s\n' gfxes gpu_classes gpu_source os_key os_description repo_slug method artifacts driver_mode kernel_status kernel_target kernel_package
 }
 
 reset_install_plan() {
@@ -601,13 +602,13 @@ resolve_plan_artifacts() {
 }
 
 validate_install_plan() {
-    local key gfxes normalized_gfxes gpu_classes expected_classes os_key os_record repo_slug
+    local key gfxes normalized_gfxes gpu_classes expected_classes os_key os_description expected_os_description os_record repo_slug
     local expected_artifacts expected_driver normalized_product_names kernel_policy kernel_target kernel_package kernel_status
 
-    [[ ${#INSTALL_PLAN[@]} -eq 11 || ${#INSTALL_PLAN[@]} -eq 12 ]] || return 1
+    [[ ${#INSTALL_PLAN[@]} -eq 12 || ${#INSTALL_PLAN[@]} -eq 13 ]] || return 1
     for key in "${!INSTALL_PLAN[@]}"; do
         case "$key" in
-            gfxes|gpu_classes|gpu_source|os_key|repo_slug|method|artifacts|driver_mode|kernel_status|kernel_target|kernel_package|product_names) ;;
+            gfxes|gpu_classes|gpu_source|os_key|os_description|repo_slug|method|artifacts|driver_mode|kernel_status|kernel_target|kernel_package|product_names) ;;
             *) return 1 ;;
         esac
     done
@@ -622,6 +623,9 @@ validate_install_plan() {
     [[ "$gpu_classes" == "$expected_classes" ]] || return 1
     case "${INSTALL_PLAN[gpu_source]}" in explicit|kfd|pci|kfd+pci) ;; *) return 1 ;; esac
     os_key=${INSTALL_PLAN[os_key]}
+    os_description=${INSTALL_PLAN[os_description]}
+    expected_os_description=${OS_DESCRIPTION:-"${OS_ID:-unknown} ${OS_VERSION:-unknown}"}
+    [[ -n "$os_description" && "$os_description" != *$'\n'* && "$os_description" != *$'\r'* && "$os_description" == "$expected_os_description" ]] || return 1
     os_record=$(resolve_os_record "$os_key") || return 1
     repo_slug=${os_record#*|}
     [[ "${INSTALL_PLAN[repo_slug]}" == "$repo_slug" ]] || return 1
@@ -642,7 +646,7 @@ validate_install_plan() {
 }
 
 resolve_install_plan() {
-    local os_key os_record repo_slug artifacts driver_mode normalized_gfxes normalized_gpu_classes gpu_source
+    local os_key os_description os_record repo_slug artifacts driver_mode normalized_gfxes normalized_gpu_classes gpu_source
     local kernel_policy kernel_target kernel_package kernel_status
     local normalized_product_names=''
 
@@ -654,6 +658,8 @@ resolve_install_plan() {
     [[ "${ROOT_PASSWORD:-}" != *$'\n'* && "${ROOT_PASSWORD:-}" != *$'\r'* ]] || return 1
     case "${INSTALL_METHOD:-}" in apt|pip|tarball) ;; *) return 1 ;; esac
     os_key=$(normalize_os_key "$OS_ID" "${OS_VERSION:-}") || return 1
+    os_description=${OS_DESCRIPTION:-"${OS_ID} ${OS_VERSION:-unknown}"}
+    [[ -n "$os_description" && "$os_description" != *$'\n'* && "$os_description" != *$'\r'* ]] || return 1
     normalized_gfxes=$(normalize_gfxes "${GPU_ARCHES:-}") || return 1
     [[ "${GPU_ARCHES:-}" == "$normalized_gfxes" ]] || return 1
     normalized_gpu_classes=$(resolve_gpu_classes "$normalized_gfxes") || return 1
@@ -678,6 +684,7 @@ resolve_install_plan() {
         [gpu_classes]="$normalized_gpu_classes"
         [gpu_source]="$gpu_source"
         [os_key]="$os_key"
+        [os_description]="$os_description"
         [repo_slug]="$repo_slug"
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
@@ -705,7 +712,8 @@ print_install_plan() {
     output+="gfx=${gfx_csv}"$'\n'
     output+="gpu_class=${gpu_class_csv}"$'\n'
     output+="gpu_source=${INSTALL_PLAN[gpu_source]}"$'\n'
-    output+="os=${INSTALL_PLAN[os_key]}"$'\n'
+    output+="os=${INSTALL_PLAN[os_description]}"$'\n'
+    output+="os_policy=${INSTALL_PLAN[os_key]}"$'\n'
     output+="method=${INSTALL_PLAN[method]}"$'\n'
     output+="artifact=${artifact_csv}"$'\n'
     output+="driver_mode=${INSTALL_PLAN[driver_mode]}"$'\n'
@@ -723,10 +731,12 @@ detect_system() {
     local os_release_file=${OS_RELEASE_FILE:-/etc/os-release}
 
     [[ -r "$os_release_file" ]] || return 1
+    unset ID VERSION_ID PRETTY_NAME
     # shellcheck disable=SC1090
     . "$os_release_file"
     OS_ID=${ID:-}
     OS_VERSION=${VERSION_ID:-}
+    OS_DESCRIPTION=${PRETTY_NAME:-"${OS_ID} ${OS_VERSION:-unknown}"}
     ARCH=${SYSTEM_ARCH_OVERRIDE:-$(uname -m)}
     KERNEL_VERSION=${SYSTEM_KERNEL_OVERRIDE:-$(uname -r)}
     [[ "$OS_ID" == ubuntu && "$ARCH" == x86_64 ]] || return 1
