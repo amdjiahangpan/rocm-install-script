@@ -405,20 +405,20 @@ assert_command_before "apt-get purge --yes rocm rocm-dev" "apt-get install --yes
 assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk7.14-gfx1151" "main flow installs the architecture-specific APT package"
 assert_not_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "auto driver mode keeps the inbox driver"
 
-multi_gfxes=$'gfx1151\ngfx1201'
-multi_packages=$'amdrocm-core-sdk7.14-gfx1151\namdrocm-core-sdk7.14-gfx1201'
-multi_pip_requirement='rocm[libraries,device-gfx1151,device-gfx1201]==7.14.0'
+multi_gfxes=$'gfx1200\ngfx1201'
+multi_packages=$'amdrocm-core-sdk7.14-gfx1200\namdrocm-core-sdk7.14-gfx1201'
+multi_pip_requirement='rocm[libraries,device-gfx1200,device-gfx1201]==7.14.0'
 MOCK_DKMS_PACKAGE_VERSION=""
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=""
 MOCK_DKMS_STATUS=""
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=""
 MOCK_FAIL_FRAGMENT=""
-assert_success "mocked multi-GFX APT lifecycle runs through the real steps" run_mocked_main apt --gpu-arch gfx1201 --gpu-arch gfx1151 --gpu-arch gfx1201
+assert_success "mocked multi-GFX APT lifecycle runs through the real steps" run_mocked_main apt --gpu-arch gfx1201 --gpu-arch gfx1200 --gpu-arch gfx1201
 assert_eq "$multi_gfxes" "$GPU_ARCHES" "duplicate explicit GPU architectures normalize before the APT plan"
 assert_eq "$multi_gfxes" "${INSTALL_PLAN[gfxes]}" "multi-GFX APT plan retains both normalized architectures"
 assert_eq "$multi_packages" "${INSTALL_PLAN[artifacts]}" "multi-GFX APT plan contains one SDK package per architecture"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk7.14-gfx1151 amdrocm-core-sdk7.14-gfx1201" "multi-GFX main installs both SDK packages in one APT transaction"
+assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk7.14-gfx1200 amdrocm-core-sdk7.14-gfx1201" "multi-GFX main installs both SDK packages in one APT transaction"
 assert_eq "1" "$(recorded_command_count "apt-get install --yes amdrocm-core-sdk7.14" "$RECORDED_COMMANDS")" "multi-GFX main performs one ROCm SDK APT transaction"
 assert_not_contains "$RECORDED_COMMANDS" "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "multi-GFX APT does not select a tarball artifact"
 
@@ -478,18 +478,17 @@ MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=""
 MOCK_DKMS_STATUS=""
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
 MOCK_FAIL_FRAGMENT=""
-assert_success "mocked multi-GFX pip lifecycle runs through the real steps" run_mocked_main pip --gpu-arch gfx1201 --gpu-arch gfx1151
+assert_success "mocked multi-GFX pip lifecycle runs through the real steps" run_mocked_main pip --gpu-arch gfx1201 --gpu-arch gfx1200
 assert_eq "$multi_gfxes" "${INSTALL_PLAN[gfxes]}" "multi-GFX pip plan retains both normalized architectures"
 assert_eq "$multi_pip_requirement" "${INSTALL_PLAN[artifacts]}" "multi-GFX pip plan composes one requirement"
-assert_contains "$RECORDED_COMMANDS" 'rocm\[libraries\,device-gfx1151\,device-gfx1201\]==7.14.0' "multi-GFX pip installs one requirement containing both device extras"
+assert_contains "$RECORDED_COMMANDS" 'rocm\[libraries\,device-gfx1200\,device-gfx1201\]==7.14.0' "multi-GFX pip installs one requirement containing both device extras"
 assert_eq "1" "$(recorded_command_count "/opt/rocm-7.14.0-venv/bin/pip install --index-url" "$RECORDED_COMMANDS")" "multi-GFX pip performs one install transaction"
 
-assert_success "mocked multi-GFX tarball lifecycle runs through the real steps" run_mocked_main tarball --gpu-arch gfx1201 --gpu-arch gfx1151
+assert_success "mocked multi-GFX tarball lifecycle runs through the real steps" run_mocked_main tarball --gpu-arch gfx1201 --gpu-arch gfx1200
 assert_eq "$multi_gfxes" "${INSTALL_PLAN[gfxes]}" "multi-GFX tarball plan retains both normalized architectures"
 assert_eq "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "${INSTALL_PLAN[artifacts]}" "multi-GFX tarball plan selects the full multiarch artifact"
 assert_contains "$RECORDED_COMMANDS" "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "multi-GFX tarball downloads the full multiarch artifact"
 assert_eq "1" "$(recorded_command_count "curl -fL --retry 0 --output" "$RECORDED_COMMANDS")" "multi-GFX tarball downloads one artifact"
-assert_not_contains "$RECORDED_COMMANDS" 'therock-dist-linux-gfx1151-7.14.0.tar.gz' "multi-GFX tarball does not download the gfx1151 artifact"
 assert_not_contains "$RECORDED_COMMANDS" 'therock-dist-linux-gfx120X-all-7.14.0.tar.gz' "multi-GFX tarball does not download a GFX-family artifact"
 
 MOCK_OS_VERSION=24.04

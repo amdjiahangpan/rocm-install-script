@@ -11,20 +11,25 @@ detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_6
 resolve_gpu_identity() {
     [[ $# -eq 0 ]] || return 64
     GPU_ARCHES=$(normalize_gfxes "$GPU_ARCHES") || return $?
+    GPU_CLASSES=$(resolve_gpu_classes "$GPU_ARCHES") || return $?
+    GPU_DETECTION_SOURCE=explicit
     GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'
     record_step "gpu:$(records_to_csv "$GPU_ARCHES")"
 }
 resolve_install_plan() {
-    local artifacts
+    local artifacts gpu_classes
 
     artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$GPU_ARCHES") || return $?
+    gpu_classes=$(resolve_gpu_classes "$GPU_ARCHES") || return $?
     INSTALL_PLAN=(
         [gfxes]="$GPU_ARCHES"
+        [gpu_classes]="$gpu_classes"
+        [gpu_source]=explicit
         [os_key]=ubuntu-24.04.4
         [repo_slug]=ubuntu2404
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
-        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE")"
+        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE" ubuntu-24.04.4 "$gpu_classes" "$GPU_ARCHES")"
         [kernel_status]=ready
         [kernel_target]='6.14.*-oem'
         [kernel_package]=linux-oem-6.14
@@ -63,9 +68,9 @@ assert_success "explicit DKMS driver mode reaches the driver step" main --gpu-ar
 assert_eq $'root\nsystem\ngpu:gfx1201\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:dkms\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "DKMS migration follows ready-kernel preparation"
 
 FLOW=""
-assert_success "repeated GPU architectures create one normalized lifecycle" main --gpu-arch gfx1201 --gpu-arch gfx1151 --gpu-arch gfx1201 --non-interactive --skip-reboot
-assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "repeated GPU architectures normalize before planning"
-assert_eq $'root\nsystem\ngpu:gfx1151,gfx1201\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:inbox\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "multi-GFX main flow runs every ready-kernel lifecycle phase once in order"
+assert_success "repeated Radeon GPU architectures create one normalized lifecycle" main --gpu-arch gfx1201 --gpu-arch gfx1200 --gpu-arch gfx1201 --non-interactive --skip-reboot
+assert_eq $'gfx1200\ngfx1201' "$GPU_ARCHES" "repeated Radeon GPU architectures normalize before planning"
+assert_eq $'root\nsystem\ngpu:gfx1200,gfx1201\nplan\nprint-plan\nconfirm\nkernel:ready\ndriver:dkms\nprerequisites\nrocm:apt\nssh\nenvironment\nverify' "${FLOW%$'\n'}" "multi-GFX main flow runs every ready-kernel lifecycle phase once in order"
 
 FLOW=""
 assert_success "verify-only normalizes repeated GPU architectures" main --verify-only --method apt --gpu-arch gfx1201 --gpu-arch gfx1151 --gpu-arch gfx1201
@@ -100,6 +105,8 @@ assert_eq $'root\nsystem\ngpu' "${FLOW%$'\n'}" "GPU preflight runs no mutation s
 resolve_gpu_identity() {
     [[ $# -eq 0 ]] || return 64
     GPU_ARCHES=$(normalize_gfxes "$GPU_ARCHES") || return $?
+    GPU_CLASSES=$(resolve_gpu_classes "$GPU_ARCHES") || return $?
+    GPU_DETECTION_SOURCE=explicit
     GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'
     record_step "gpu:$(records_to_csv "$GPU_ARCHES")"
 }
@@ -114,16 +121,19 @@ assert_contains "$MAIN_OUTPUT" "gfx=gfx1151" "plan validation reports GPU contex
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan' "${FLOW%$'\n'}" "plan validation runs no mutation stage"
 
 resolve_install_plan() {
-    local artifacts
+    local artifacts gpu_classes
 
     artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$GPU_ARCHES") || return $?
+    gpu_classes=$(resolve_gpu_classes "$GPU_ARCHES") || return $?
     INSTALL_PLAN=(
         [gfxes]="$GPU_ARCHES"
+        [gpu_classes]="$gpu_classes"
+        [gpu_source]=explicit
         [os_key]=ubuntu-24.04.4
         [repo_slug]=ubuntu2404
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
-        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE")"
+        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE" ubuntu-24.04.4 "$gpu_classes" "$GPU_ARCHES")"
         [kernel_status]=ready
         [kernel_target]='6.14.*-oem'
         [kernel_package]=linux-oem-6.14
@@ -148,11 +158,14 @@ assert_contains "$MAIN_OUTPUT" "--non-interactive" "installation confirmation te
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm' "${FLOW%$'\n'}" "installation confirmation runs no mutation stage"
 
 resolve_install_plan() {
-    local artifacts
+    local artifacts gpu_classes
 
     artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$GPU_ARCHES") || return $?
+    gpu_classes=$(resolve_gpu_classes "$GPU_ARCHES") || return $?
     INSTALL_PLAN=(
         [gfxes]="$GPU_ARCHES"
+        [gpu_classes]="$gpu_classes"
+        [gpu_source]=explicit
         [os_key]=ubuntu-24.04.4
         [repo_slug]=ubuntu2404
         [method]="$INSTALL_METHOD"
@@ -225,6 +238,14 @@ INSTALL_PLAN=([driver_mode]=dkms [os_key]=ubuntu-24.04.4)
 assert_success "DKMS mode migrates to AMDGPU 31.40" migrate_driver
 assert_contains "$RECORDED_COMMANDS" "dpkg --purge amdgpu-dkms" "DKMS purges conflicting old state before repository setup"
 assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "DKMS installs AMDGPU 31.40"
+
+assert_eq radeon "$(resolve_gpu_classes gfx1200)" "gfx1200 resolves to the Radeon policy class"
+assert_eq ryzen "$(resolve_gpu_classes gfx1151)" "gfx1151 resolves to the Ryzen policy class"
+assert_eq instinct "$(resolve_gpu_classes gfx942)" "gfx942 resolves to the Instinct policy class"
+assert_eq dkms "$(resolve_driver_mode auto ubuntu-24.04.4 radeon gfx1200)" "Ubuntu 24 Radeon auto mode selects AMDGPU DKMS"
+assert_eq inbox "$(resolve_driver_mode auto ubuntu-24.04.4 ryzen gfx1151)" "Ubuntu 24 Ryzen auto mode selects the inbox driver"
+assert_eq dkms "$(resolve_driver_mode dkms ubuntu-24.04.4 radeon gfx1200)" "Ubuntu 24 Radeon accepts explicit DKMS"
+assert_fails "Ubuntu 24 Ryzen rejects explicit DKMS" resolve_driver_mode dkms ubuntu-24.04.4 ryzen gfx1151
 
 assert_eq '6.14.*-oem|linux-oem-6.14' "$(kernel_policy_for inbox ubuntu-24.04.4 gfx1151)" "Ubuntu 24 Ryzen targets select the approved OEM metapackage"
 assert_success "Ubuntu 24 Ryzen accepts the current OEM kernel release" validate_ubuntu_kernel inbox ubuntu-24.04.4 6.14.0-1020-oem gfx1151

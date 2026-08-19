@@ -37,6 +37,22 @@ gfx1103|gfx1103|device-gfx1103|therock-dist-linux-gfx110X-all-7.14.0.tar.gz'
 
 PCI_GPU_DATA='7590|*|gfx1200|radeon'
 
+GPU_CLASS_DATA='gfx950|instinct
+gfx942|instinct
+gfx90a|instinct
+gfx908|instinct
+gfx1201|radeon
+gfx1200|radeon
+gfx1100|radeon
+gfx1101|radeon
+gfx1102|radeon
+gfx1030|radeon
+gfx1151|ryzen
+gfx1150|ryzen
+gfx1152|ryzen
+gfx1153|ryzen
+gfx1103|ryzen'
+
 declare -A ROCM_714_ARTIFACT_RECORDS=()
 declare -A ROCM_714_OS_RECORDS=(
     [ubuntu-24.04.4]='apt|ubuntu2404'
@@ -190,6 +206,34 @@ is_supported_gpu_arch() {
     validate_artifact_gfx "${1:-}"
 }
 
+gpu_class_for_gfx() {
+    local requested_gfx=${1:-} gfx gpu_class
+
+    [[ $# -eq 1 ]] || return 1
+    validate_artifact_gfx "$requested_gfx" || return 1
+    while IFS='|' read -r gfx gpu_class; do
+        [[ "$gfx" == "$requested_gfx" ]] || continue
+        case "$gpu_class" in ryzen|radeon|instinct) ;; *) return 1 ;; esac
+        printf '%s\n' "$gpu_class"
+        return 0
+    done <<< "$GPU_CLASS_DATA"
+    return 1
+}
+
+resolve_gpu_classes() {
+    local gfxes=${1:-} normalized_gfxes gfx gpu_class
+    local -a gpu_classes=()
+
+    [[ $# -eq 1 ]] || return 1
+    normalized_gfxes=$(normalize_gfxes "$gfxes") || return 1
+    [[ "$gfxes" == "$normalized_gfxes" ]] || return 1
+    while IFS= read -r gfx || [[ -n "$gfx" ]]; do
+        gpu_class=$(gpu_class_for_gfx "$gfx") || return 1
+        gpu_classes+=("$gpu_class")
+    done <<< "$normalized_gfxes"
+    normalize_records "$(printf '%s\n' "${gpu_classes[@]}")"
+}
+
 is_ryzen_scoped_gfx() {
     case "${1:-}" in
         gfx1103|gfx1150|gfx1151|gfx1152|gfx1153) return 0 ;;
@@ -258,9 +302,22 @@ validate_ubuntu_kernel() {
 }
 
 resolve_driver_mode() {
-    case "${1:-}" in
-        auto|inbox) printf '%s\n' inbox ;;
-        dkms) printf '%s\n' dkms ;;
+    local requested_mode=${1:-} os_key=${2:-} gpu_classes=${3:-} gfxes=${4:-}
+    local normalized_classes expected_classes
+
+    [[ $# -eq 4 ]] || return 1
+    normalized_classes=$(normalize_records "$gpu_classes") || return 1
+    [[ "$gpu_classes" == "$normalized_classes" ]] || return 1
+    expected_classes=$(resolve_gpu_classes "$gfxes") || return 1
+    [[ "$normalized_classes" == "$expected_classes" ]] || return 1
+    [[ "$normalized_classes" != *$'\n'* ]] || return 1
+    case "$os_key|$normalized_classes" in
+        ubuntu-24.04.4\|ryzen|ubuntu-26.04\|ryzen)
+            case "$requested_mode" in auto|inbox) printf '%s\n' inbox ;; *) return 1 ;; esac
+            ;;
+        ubuntu-24.04.4\|radeon|ubuntu-24.04.4\|instinct|ubuntu-26.04\|radeon|ubuntu-26.04\|instinct)
+            case "$requested_mode" in auto|dkms) printf '%s\n' dkms ;; *) return 1 ;; esac
+            ;;
         *) return 1 ;;
     esac
 }
@@ -506,11 +563,18 @@ resolve_gpu_identity() {
             return 1
         fi
     fi
+    local expected_classes
+    expected_classes=$(resolve_gpu_classes "$GPU_ARCHES") || return 1
+    if [[ -n "$GPU_CLASSES" ]]; then
+        [[ "$GPU_CLASSES" == "$expected_classes" ]] || return 1
+    else
+        GPU_CLASSES=$expected_classes
+    fi
     GPU_PRODUCT_NAMES=$(detect_gpu_product_names "${GPU_DETECTION_DRM_ROOT:-/sys/class/drm}" "${AMDGPU_IDS_PATH:-/usr/share/libdrm/amdgpu.ids}" 2>/dev/null || true)
 }
 
 install_plan_keys() {
-    printf '%s\n' gfxes os_key repo_slug method artifacts driver_mode kernel_status kernel_target kernel_package
+    printf '%s\n' gfxes gpu_classes gpu_source os_key repo_slug method artifacts driver_mode kernel_status kernel_target kernel_package
 }
 
 reset_install_plan() {
@@ -536,13 +600,13 @@ resolve_plan_artifacts() {
 }
 
 validate_install_plan() {
-    local key gfxes normalized_gfxes os_key os_record repo_slug
+    local key gfxes normalized_gfxes gpu_classes expected_classes os_key os_record repo_slug
     local expected_artifacts expected_driver normalized_product_names kernel_policy kernel_target kernel_package kernel_status
 
-    [[ ${#INSTALL_PLAN[@]} -eq 9 || ${#INSTALL_PLAN[@]} -eq 10 ]] || return 1
+    [[ ${#INSTALL_PLAN[@]} -eq 11 || ${#INSTALL_PLAN[@]} -eq 12 ]] || return 1
     for key in "${!INSTALL_PLAN[@]}"; do
         case "$key" in
-            gfxes|os_key|repo_slug|method|artifacts|driver_mode|kernel_status|kernel_target|kernel_package|product_names) ;;
+            gfxes|gpu_classes|gpu_source|os_key|repo_slug|method|artifacts|driver_mode|kernel_status|kernel_target|kernel_package|product_names) ;;
             *) return 1 ;;
         esac
     done
@@ -552,13 +616,17 @@ validate_install_plan() {
     gfxes=${INSTALL_PLAN[gfxes]}
     normalized_gfxes=$(normalize_gfxes "$gfxes") || return 1
     [[ "$gfxes" == "$normalized_gfxes" ]] || return 1
+    gpu_classes=${INSTALL_PLAN[gpu_classes]}
+    expected_classes=$(resolve_gpu_classes "$gfxes") || return 1
+    [[ "$gpu_classes" == "$expected_classes" ]] || return 1
+    case "${INSTALL_PLAN[gpu_source]}" in explicit|kfd|pci|kfd+pci) ;; *) return 1 ;; esac
     os_key=${INSTALL_PLAN[os_key]}
     os_record=$(resolve_os_record "$os_key") || return 1
     repo_slug=${os_record#*|}
     [[ "${INSTALL_PLAN[repo_slug]}" == "$repo_slug" ]] || return 1
     expected_artifacts=$(resolve_plan_artifacts "${INSTALL_PLAN[method]}" "$gfxes") || return 1
     [[ "${INSTALL_PLAN[artifacts]}" == "$expected_artifacts" ]] || return 1
-    expected_driver=$(resolve_driver_mode "${DRIVER_MODE:-}") || return 1
+    expected_driver=$(resolve_driver_mode "${DRIVER_MODE:-}" "$os_key" "$gpu_classes" "$gfxes") || return 1
     [[ "${INSTALL_PLAN[driver_mode]}" == "$expected_driver" ]] || return 1
     kernel_policy=$(kernel_policy_for "${INSTALL_PLAN[driver_mode]}" "$os_key" "$gfxes") || return 1
     IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
@@ -573,7 +641,7 @@ validate_install_plan() {
 }
 
 resolve_install_plan() {
-    local os_key os_record repo_slug artifacts driver_mode normalized_gfxes
+    local os_key os_record repo_slug artifacts driver_mode normalized_gfxes normalized_gpu_classes gpu_source
     local kernel_policy kernel_target kernel_package kernel_status
     local normalized_product_names=''
 
@@ -587,11 +655,17 @@ resolve_install_plan() {
     os_key=$(normalize_os_key "$OS_ID" "${OS_VERSION:-}") || return 1
     normalized_gfxes=$(normalize_gfxes "${GPU_ARCHES:-}") || return 1
     [[ "${GPU_ARCHES:-}" == "$normalized_gfxes" ]] || return 1
+    normalized_gpu_classes=$(resolve_gpu_classes "$normalized_gfxes") || return 1
+    if [[ -n ${GPU_CLASSES:-} ]]; then
+        [[ "$GPU_CLASSES" == "$normalized_gpu_classes" ]] || return 1
+    fi
+    gpu_source=${GPU_DETECTION_SOURCE:-explicit}
+    case "$gpu_source" in explicit|kfd|pci|kfd+pci) ;; *) return 1 ;; esac
     if [[ -n ${GPU_PRODUCT_NAMES:-} ]]; then
         normalized_product_names=$(normalize_records "$GPU_PRODUCT_NAMES") || return 1
         [[ "$GPU_PRODUCT_NAMES" == "$normalized_product_names" ]] || return 1
     fi
-    driver_mode=$(resolve_driver_mode "$DRIVER_MODE") || return 1
+    driver_mode=$(resolve_driver_mode "$DRIVER_MODE" "$os_key" "$normalized_gpu_classes" "$normalized_gfxes") || return 1
     kernel_policy=$(kernel_policy_for "$driver_mode" "$os_key" "$normalized_gfxes") || return 1
     IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
     kernel_status=$(resolve_kernel_status "$kernel_target" "$kernel_package" "${KERNEL_VERSION:-}") || return $?
@@ -600,6 +674,8 @@ resolve_install_plan() {
     artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$normalized_gfxes") || return 1
     INSTALL_PLAN=(
         [gfxes]="$normalized_gfxes"
+        [gpu_classes]="$normalized_gpu_classes"
+        [gpu_source]="$gpu_source"
         [os_key]="$os_key"
         [repo_slug]="$repo_slug"
         [method]="$INSTALL_METHOD"
@@ -618,13 +694,16 @@ resolve_install_plan() {
 }
 
 print_install_plan() {
-    local gfx_csv artifact_csv product_name_csv output
+    local gfx_csv gpu_class_csv artifact_csv product_name_csv output
 
     validate_install_plan || return 1
     gfx_csv=$(records_to_csv "${INSTALL_PLAN[gfxes]}") || return 1
+    gpu_class_csv=$(records_to_csv "${INSTALL_PLAN[gpu_classes]}") || return 1
     artifact_csv=$(records_to_csv "${INSTALL_PLAN[artifacts]}") || return 1
     output=$'INSTALL PLAN\n'
     output+="gfx=${gfx_csv}"$'\n'
+    output+="gpu_class=${gpu_class_csv}"$'\n'
+    output+="gpu_source=${INSTALL_PLAN[gpu_source]}"$'\n'
     output+="os=${INSTALL_PLAN[os_key]}"$'\n'
     output+="method=${INSTALL_PLAN[method]}"$'\n'
     output+="artifact=${artifact_csv}"$'\n'
