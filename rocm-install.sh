@@ -1094,6 +1094,13 @@ configure_grub_next_entry() {
     [[ $next_entry_count -eq 1 && "$next_entry" == "$entry" ]]
 }
 
+clear_grub_next_entry() {
+    local grub_env=${GRUB_ENV_FILE:-/boot/grub/grubenv}
+
+    run_cmd grub-editenv "$grub_env" unset next_entry || return $?
+    run_cmd grub-editenv "$grub_env" unset prev_saved_entry || return $?
+}
+
 confirm_kernel_reboot() {
     local answer
 
@@ -1110,9 +1117,14 @@ prepare_kernel_reboot() {
     printf 'ROCm will select one boot attempt: current kernel=%s, target kernel=%s, boot entry=%s.\n' \
         "${KERNEL_VERSION:-unknown}" "${INSTALL_PLAN[kernel_target]:-unknown}" "$entry" >&2
     confirm_kernel_reboot || return 1
-    configure_grub_next_entry "$entry" || return 1
     boot_id=$(read_boot_id) || return 1
     write_pending_kernel_state "${INSTALL_PLAN[kernel_target]}" "$entry" "$boot_id" 1 || return 1
+    if ! configure_grub_next_entry "$entry"; then
+        if clear_grub_next_entry; then
+            clear_pending_kernel_state || return 1
+        fi
+        return 1
+    fi
     handle_reboot || return $?
     return "$EXIT_KERNEL_REBOOT_REQUIRED"
 }
