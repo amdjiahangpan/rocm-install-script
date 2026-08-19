@@ -254,13 +254,54 @@ AMDGPU_DKMS_STATUS=$real_dkms_status
 AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION='1:31.30.0.0.31300000-older.24.04'
 assert_fails "AMDGPU 31.40 with mismatched firmware is not clean" amdgpu_dkms_is_clean_3140
 
+runtime_pci_root="${TEST_TEMP_ROOT}/runtime-pci"
+runtime_driver_root="${TEST_TEMP_ROOT}/drivers/amdgpu"
+runtime_device_root="${runtime_pci_root}/0000:03:00.0"
+mkdir -p "$runtime_device_root" "$runtime_driver_root"
+printf '0x1002\n' > "${runtime_device_root}/vendor"
+printf '0x7590\n' > "${runtime_device_root}/device"
+printf '0xc0\n' > "${runtime_device_root}/revision"
+printf '0x030000\n' > "${runtime_device_root}/class"
+ln -s "$runtime_driver_root" "${runtime_device_root}/driver"
+AMDGPU_RUNTIME_PCI_ROOT=$runtime_pci_root
+AMDGPU_RUNTIME_KFD_ROOT="${ROOT_DIR}/tests/fixtures/rx-9060-xt/kfd"
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
+INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+assert_success "running AMDGPU DKMS module, PCI binding, and KFD target are active" amdgpu_dkms_runtime_is_active
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
+assert_fails "an inbox module path is not active DKMS" amdgpu_dkms_runtime_is_active
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
+rm "${runtime_device_root}/driver"
+assert_fails "an unbound AMD PCI device is not active" amdgpu_dkms_runtime_is_active
+ln -s "$runtime_driver_root" "${runtime_device_root}/driver"
+
 reset_test_state
 MOCK_DKMS_PACKAGE_VERSION=$real_dkms_package_version
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
 MOCK_DKMS_STATUS=$real_dkms_status
 DKMS_CLEANUP_POLICY=never
 NON_INTERACTIVE=true
-INSTALL_PLAN=([driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+REBOOT_REQUIRED=false
+assert_success "a clean active AMDGPU 31.40 installation is left unchanged" migrate_driver
+assert_eq false "$REBOOT_REQUIRED" "active AMDGPU DKMS does not request reboot"
+assert_eq '' "$RECORDED_COMMANDS" "active AMDGPU DKMS performs no purge or install"
+
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
+reset_test_state
+REBOOT_REQUIRED=false
+assert_success "clean but inactive AMDGPU 31.40 waits for activation without reinstall" migrate_driver
+assert_eq true "$REBOOT_REQUIRED" "inactive AMDGPU DKMS requests one activation reboot"
+assert_eq '' "$RECORDED_COMMANDS" "inactive clean AMDGPU DKMS is not purged or reinstalled"
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
+
+reset_test_state
+MOCK_DKMS_PACKAGE_VERSION=$real_dkms_package_version
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
+MOCK_DKMS_STATUS=$real_dkms_status
+DKMS_CLEANUP_POLICY=never
+NON_INTERACTIVE=true
+INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+REBOOT_REQUIRED=false
 assert_success "a clean real AMDGPU 31.40 installation is left unchanged" migrate_driver
 assert_eq '' "$RECORDED_COMMANDS" "a clean AMDGPU 31.40 rerun performs no purge or install"
 

@@ -1348,6 +1348,53 @@ amdgpu_dkms_is_clean_3140() {
     ((status_count > 0)) && [[ "$running_kernel_found" == true ]]
 }
 
+amdgpu_dkms_runtime_is_active() {
+    local expected_gfxes=${INSTALL_PLAN[gfxes]:-} module_path
+    local pci_root=${AMDGPU_RUNTIME_PCI_ROOT:-${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}}
+    local kfd_root=${AMDGPU_RUNTIME_KFD_ROOT:-${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}}
+    local kfd_gfxes pci_records pci_gfxes='' record gfx gpu_class
+    local device_path vendor device revision pci_class driver_path matched_devices=0
+
+    expected_gfxes=$(normalize_gfxes "$expected_gfxes") || return 1
+    if [[ -n ${AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE:-} ]]; then
+        module_path=$AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE
+    else
+        module_path=$(capture_cmd modinfo -F filename amdgpu) || return 1
+    fi
+    [[ "$module_path" == */updates/dkms/amdgpu.ko* ]] || return 1
+
+    kfd_gfxes=$(detect_gpu_architectures "$kfd_root") || return 1
+    [[ "$kfd_gfxes" == "$expected_gfxes" ]] || return 1
+    pci_records=$(detect_gpu_architectures_from_pci "$pci_root") || return 1
+    while IFS='|' read -r gfx gpu_class; do
+        pci_gfxes+="${pci_gfxes:+$'\n'}${gfx}"
+    done <<< "$pci_records"
+    pci_gfxes=$(normalize_gfxes "$pci_gfxes") || return 1
+    [[ "$pci_gfxes" == "$expected_gfxes" ]] || return 1
+
+    for device_path in "$pci_root"/*; do
+        [[ -d "$device_path" && -r "$device_path/vendor" && -r "$device_path/device" && -r "$device_path/revision" && -r "$device_path/class" ]] || continue
+        IFS= read -r vendor < "$device_path/vendor" || continue
+        IFS= read -r device < "$device_path/device" || continue
+        IFS= read -r revision < "$device_path/revision" || continue
+        IFS= read -r pci_class < "$device_path/class" || continue
+        vendor=$(normalize_pci_id "$vendor") || continue
+        [[ "$vendor" == 1002 ]] || continue
+        pci_class=$(trim_field "$pci_class")
+        pci_class=${pci_class#0x}
+        pci_class=${pci_class#0X}
+        [[ "$pci_class" =~ ^[[:xdigit:]]{6}$ && "${pci_class:0:2}" == 03 ]] || continue
+        record=$(lookup_pci_gpu_record "$device" "$revision") || return 1
+        gfx=${record%%|*}
+        [[ "$expected_gfxes" == "$gfx" || "$expected_gfxes" == "$gfx"$'\n'* || "$expected_gfxes" == *$'\n'"$gfx" || "$expected_gfxes" == *$'\n'"$gfx"$'\n'* ]] || return 1
+        [[ -L "$device_path/driver" ]] || return 1
+        driver_path=$(readlink -f "$device_path/driver") || return 1
+        [[ "${driver_path##*/}" == amdgpu ]] || return 1
+        matched_devices=$((matched_devices + 1))
+    done
+    ((matched_devices > 0))
+}
+
 confirm_dkms_cleanup() {
     local answer
 
@@ -1433,6 +1480,10 @@ migrate_driver() {
             ;;
         dkms)
             if [[ $detection_status -eq 0 ]] && amdgpu_dkms_is_clean_3140; then
+                if amdgpu_dkms_runtime_is_active; then
+                    return 0
+                fi
+                REBOOT_REQUIRED=true
                 return 0
             fi
             [[ $detection_status -eq 1 ]] || remove_existing_amdgpu_dkms || return $?
