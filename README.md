@@ -42,17 +42,21 @@ sudo bash ./rocm-install.sh
 ```
 
 The default run uses APT and installs one architecture-specific full Core SDK
-for each detected target. It prints the resolved plan and asks for confirmation
-before installing. It also displays the resolved kernel status, target, and
-official Ubuntu metapackage. If kernel preparation, a driver, group, or udev
-change requires a reboot, the default reboot policy is immediate.
+for each detected target. Before mutation it prints the detected host, GPU
+architecture, GPU class, detection source, driver policy, kernel policy, exact
+artifacts, and ordered actions, then asks for confirmation.
 
-After confirmation, a non-ready kernel is prepared first and the installer
-stops for reboot before any driver, prerequisite, ROCm, SSH, or environment
-work. A ready kernel proceeds to driver migration before any prerequisite APT
-update or install. The installer removes a conflicting legacy DKMS driver and
-rechecks for residue before installing prerequisites, ROCm, SSH, and the system
-environment.
+Kernel changes are strict by default. When the running kernel does not match the
+reviewed policy, the installer prints the current kernel, target series/flavor,
+metapackage, and next command, then exits without installing a kernel or
+rebooting. `--prepare-kernel` explicitly permits metapackage installation.
+`--reboot-after-kernel` additionally selects one verified GRUB entry and permits
+one reboot attempt; a failed switch is never retried automatically.
+
+A ready kernel proceeds to context-sensitive driver migration before any
+prerequisite APT transaction. Clean AMDGPU 31.40 DKMS state is retained
+unchanged. Conflicting driver state is removed only under the configured cleanup
+policy before prerequisites, ROCm, SSH, and environment setup.
 
 ## Supported Systems and GPUs
 
@@ -61,7 +65,9 @@ environment.
 | Ubuntu 24.04 | `x86_64` | Compute |
 | Ubuntu 26.04 | `x86_64` | Compute |
 
-Ubuntu 24.04 is normalized to the supported 24.04.4 record. Other operating
+The detected Ubuntu description is preserved exactly in the public plan. The
+base release selects the reviewed Ubuntu repository policy; the installer does
+not infer or claim a point release from `VERSION_ID=24.04`. Other operating
 systems, CPU architectures, and workloads are rejected.
 
 The installer supports these architecture-specific artifacts:
@@ -73,80 +79,81 @@ gfx1151 gfx1150 gfx1152 gfx1153 gfx1103
 
 ### Fail-Closed GPU Selection
 
-Automatic pre-install detection scans KFD topology nodes with
-`cpu_cores_count == 0` and a nonzero `gfx_target_version`. The decimal target is
-decoded into its conventional `gfx` name. The installer validates every GPU
-node, removes duplicates, and sorts the complete set. Zero detected targets or
-any unsupported target fails before system mutation. One or more supported
-targets, including multiple unique architectures, are accepted automatically.
+Automatic detection uses two independent sources. KFD topology is primary: GPU
+nodes require `cpu_cores_count == 0` and a nonzero `gfx_target_version`. When the
+current driver cannot create KFD topology, the installer scans AMD display-class
+PCI sysfs records and resolves only IDs present in its reviewed PCI-to-GFX table.
+For example, RX 9060 XT PCI ID `1002:7590` resolves to Radeon `gfx1200`.
+
+When KFD and PCI are both available, their complete normalized GFX sets and
+reviewed classes must agree. A disagreement, ambiguity, unsupported GFX, or
+unknown PCI ID fails before mutation. Unknown IDs are reported with an exact
+`--gpu-arch` recovery command template; marketing names are never used to guess
+an architecture.
 
 `--gpu-arch` may be repeated. If present, its complete set replaces automatic
-KFD discovery rather than extending it. The installer validates, deduplicates,
-and sorts the explicit values. An override may intentionally request supported
-artifact coverage for hardware that is currently absent, which supports
-recovery and pre-provisioning. Any unsupported member rejects the complete set.
-Unless a required reboot defers verification, every explicitly requested target
-must then appear as a `rocminfo` agent.
+detection. Values are validated, deduplicated, sorted, and mapped to a reviewed
+device class. Mixed device classes are rejected unless a host policy explicitly
+supports them. Unless a required reboot defers verification, every explicitly
+requested target must appear as a `rocminfo` agent.
 
-For display only, the installer reads all available
-`/sys/class/drm/card*/device/product_name` values. For a card with an empty
-value, it performs an exact device/revision lookup in the installed
-`/usr/share/libdrm/amdgpu.ids` file and prefixes the resulting marketing name
-with `AMD `. The unique nonempty product names are sorted independently and are
-not correlated with individual `gfx` targets. They never select a package, SKU,
-driver, or kernel. The normalized `gfx` collection selects the kernel policy;
-pre-install detection does not use `rocminfo`,
-`/proc/cpuinfo`, or `lspci`; `rocminfo` remains a post-install verification
-requirement.
+DRM product names remain informational. Direct sysfs values or exact
+`amdgpu.ids` device/revision lookups are displayed independently and never
+select a package, SKU, driver, kernel, or PCI-to-GFX mapping. `rocminfo` remains
+a post-install verification requirement.
 
 ## Kernel and Driver Requirements
 
-The installer resolves one policy for the complete supported `gfx` set, matches
-both kernel series and flavor, and only uses official Ubuntu metapackages.
+The installer resolves one reviewed policy for the complete GFX set and matches
+both kernel series and flavor.
 
-| Host and complete GPU set | Resolved driver mode | Kernel target | Metapackage |
+| Host and GPU class | Resolved `auto` driver | Kernel target | Metapackage |
 | --- | --- | --- | --- |
-| Ubuntu 24.04 with only `gfx1103`, `gfx1150`, `gfx1151`, `gfx1152`, or `gfx1153` | Inbox only | `6.14.*-oem` | `linux-oem-6.14` |
-| Ubuntu 24.04 with only non-Ryzen supported targets | Inbox or DKMS | `6.8.*-generic` | `linux-generic` |
-| Ubuntu 26.04 with any supported set | Inbox or DKMS | `7.0.*-generic` | `linux-generic-7.0` |
+| Ubuntu 24.04 Ryzen (`gfx1103`, `gfx1150`-`gfx1153`) | Inbox | `6.14.*-oem` | `linux-oem-6.14` |
+| Ubuntu 24.04 Radeon or Instinct | AMDGPU 31.40 DKMS | `6.8.*-generic` | `linux-generic` |
+| Ubuntu 26.04 Ryzen | Inbox | `7.0.*-generic` | `linux-generic-7.0` |
+| Ubuntu 26.04 Radeon or Instinct | AMDGPU 31.40 DKMS | `7.0.*-generic` | `linux-generic-7.0` |
 
-On Ubuntu 24.04, a set that combines any Ryzen-scoped target with any other
-supported target is rejected before mutation. Ryzen-scoped targets require the
-resolved inbox driver; explicit `dkms` is rejected. Ubuntu 26.04 permits every
-supported collection under its one 7.0 generic policy.
+Explicit driver modes are accepted only when the same reviewed policy permits
+them. Mixed Ryzen/Radeon/Instinct sets fail closed rather than synthesizing an
+unsupported common policy.
 
 The plan reports `kernel_status`, `kernel_target`, and `kernel_package`.
-`ready` means the running `uname -r` already matches the target series and
-flavor. `reboot-required` means the target metapackage is installed, a matching
-boot image is a readable nonempty regular file, and the running kernel does not
-match. Otherwise the status is `install-required`.
+`ready` means the running release matches the exact series and flavor.
+`reboot-required` means the target package and a valid boot image exist but are
+not running. Otherwise the status is `install-required`.
 
-For `install-required`, after confirmation the installer first requires at
-least 512 MiB (524288 KiB) free on the filesystem backing `/boot`, then runs
-`apt-get update`, confirms a candidate for the exact metapackage, simulates a
-`--no-remove --install-recommends` transaction, rejects any simulated `Remv `
-line, and installs the one approved metapackage with `--no-remove`. It then
-verifies that the metapackage is installed and that a matching `/boot/vmlinuz-*`
-image exists. It marks the reboot as required and stops before driver or ROCm
-work. `reboot-required` similarly performs no APT work and stops for reboot.
-`--skip-reboot` suppresses the reboot command but still stops the run.
+Neither non-ready status mutates the host by default. `--prepare-kernel` checks
+at least 512 MiB free on `/boot`, validates the exact APT candidate, simulates a
+`--no-remove --install-recommends` transaction, installs the reviewed
+metapackage, and verifies its boot image. It then exits with a distinct
+reboot-required status before driver or ROCm work.
 
-`auto` resolves to the inbox AMDGPU driver. Explicit `dkms` installs AMDGPU
-31.40 from AMD's Ubuntu repository. `inbox` and `auto` remove conflicting old
-DKMS state under the configured cleanup policy.
+`--reboot-after-kernel` requires `--prepare-kernel`. It resolves an exact GRUB
+entry, verifies the one-shot selection, writes
+`/var/lib/rocm-installer/pending-kernel`, and confirms before reboot. On the next
+run, a successful switch clears the state. If the boot ID changed but the
+kernel still mismatches, the installer reports manual recovery and never
+reboots again.
+
+`auto` is context-sensitive; it is not an alias for inbox. Radeon and Instinct
+paths select AMDGPU 31.40 DKMS, while reviewed Ryzen paths select inbox.
 
 ### Existing DKMS Installations
 
-The script checks the installed `amdgpu-dkms` and `amdgpu-dkms-firmware`
-packages and registered AMDGPU DKMS modules.
+The script checks the installed `amdgpu-dkms` and
+`amdgpu-dkms-firmware` packages plus every registered AMDGPU DKMS module.
 
-- Inbox mode purges installed legacy DKMS packages before any prerequisite APT
-  update or install, then verifies that no AMDGPU DKMS residue remains.
-- DKMS mode keeps a clean 31.40 installation unchanged.
-- DKMS mode purges an older, mixed, or malformed AMDGPU DKMS install, verifies
-  that no residue remains, then configures the 31.40 repository and installs it.
-- Any remaining AMDGPU DKMS package or registration after package removal stops
-  the installation.
+- A clean 31.40 installation is recognized using the real Debian build marker
+  (`31400000`), matching firmware build, derived DKMS module version, installed
+  status, and a module built for the running kernel.
+- Clean DKMS state is idempotent: no purge, reinstall, or reboot request.
+- Older, partial, mixed-build, or malformed state is removed before configuring
+  the 31.40 repository and installing the driver once.
+- Inbox mode removes conflicting DKMS state only when the reviewed GPU/host
+  policy permits inbox.
+- Any residue after removal or inconsistent state after installation stops the
+  lifecycle with a stage-specific error.
 
 The cleanup policy applies whenever removal is required:
 
@@ -228,20 +235,24 @@ All three methods use the same GPU, OS, kernel-preparation, and driver policy.
 | Option | Meaning |
 | --- | --- |
 | `--method METHOD` | Installation method: `apt`, `pip`, or `tarball`. Default: `apt`. |
-| `--gpu-arch ARCH` | Replace automatic KFD detection with a supported architecture. May be repeated to form the complete override set; duplicate values are removed. |
-| `--driver-mode MODE` | `auto` (default), `inbox`, or `dkms`. |
+| `--gpu-arch ARCH` | Replace automatic KFD/PCI detection with a supported architecture. May be repeated; duplicate values are removed. |
+| `--driver-mode MODE` | `auto` (default), `inbox`, or `dkms`; explicit modes must match the reviewed host/GPU policy. |
 | `--skip-ssh` | Skip OpenSSH setup and any root password update. |
 | `--root-password PASS` | Set the root password during SSH setup. |
-| `--skip-reboot` | Don't reboot after an installation that requires one. |
-| `--reboot-delay MIN` | Delay a required reboot by 0 to 120 minutes. `0` means immediate. |
+| `--prepare-kernel` | Explicitly install the reviewed kernel metapackage when the running kernel is not ready. |
+| `--reboot-after-kernel` | With `--prepare-kernel`, select and verify one GRUB boot attempt, persist pending state, and reboot once. |
+| `--skip-reboot` | Suppress post-driver/group/udev reboot and the final command after explicit kernel boot selection. |
+| `--reboot-delay MIN` | Delay an allowed reboot by 0 to 120 minutes. `0` means immediate. |
 | `--verify-only` | Verify an existing installation and make no install changes. |
 | `--uninstall` | Remove the ROCm 7.14.0 installation. |
-| `--non-interactive` | Run without confirmation prompts. |
+| `--non-interactive` | Run without prompts; kernel reboot still requires both explicit kernel flags. |
 | `--dkms-cleanup POLICY` | DKMS cleanup policy: `auto`, `ask`, `always`, or `never`. Default: `auto`. |
 | `--help`, `-h` | Show command help. |
 
-`--verify-only` and `--uninstall` can't be used together. Password values that
-contain a newline or carriage return are rejected.
+`--verify-only` and `--uninstall` cannot be combined. Kernel preparation cannot
+be combined with either mode, and `--reboot-after-kernel` requires
+`--prepare-kernel`. Password values containing a newline or carriage return are
+rejected.
 
 ## Examples
 
@@ -257,40 +268,58 @@ Install for one explicit target instead of using KFD detection:
 sudo bash ./rocm-install.sh --gpu-arch gfx1151
 ```
 
-On Ubuntu 26.04, pre-provision a Ryzen AI Max+ 395 system with its `gfx1151`
-integrated GPU and a Radeon AI PRO R9700 `gfx1201` discrete GPU by supplying
-both targets:
-
-```bash
-sudo bash ./rocm-install.sh \
-  --gpu-arch gfx1151 \
-  --gpu-arch gfx1201
-```
-
-On Ubuntu 24.04, do not combine those targets: `gfx1151` requires the
-Ryzen-scoped 6.14 OEM inbox policy, while `gfx1201` requires the 6.8 generic
-policy. The installer rejects that mixed set rather than synthesizing an
-unsupported policy.
-
-On Ubuntu 26.04, the default APT plan includes this excerpt:
+RX 9060 XT is Radeon `gfx1200`. With working KFD and the reviewed PCI record, an
+Ubuntu 24.04 plan includes:
 
 ```text
 INSTALL PLAN
-gfx=gfx1151,gfx1201
-os=ubuntu-26.04
+gfx=gfx1200
+gpu_class=radeon
+gpu_source=kfd+pci
+os=Ubuntu 24.04.2 LTS
+os_policy=ubuntu-24.04.4
 method=apt
-artifact=amdrocm-core-sdk7.14-gfx1151,amdrocm-core-sdk7.14-gfx1201
-driver_mode=inbox
+artifact=amdrocm-core-sdk7.14-gfx1200
+driver_mode=dkms
 kernel_status=ready
-kernel_target=7.0.*-generic
-kernel_package=linux-generic-7.0
+kernel_target=6.8.*-generic
+kernel_package=linux-generic
 ```
 
-The public plan labels are `gfx`, `os`, `method`, `artifact`, `driver_mode`,
-`kernel_status`, `kernel_target`, `kernel_package`, and the optional
-informational `product_name`. Collection values are rendered as sorted
-comma-separated fields. A record that contains a comma is quoted in the CSV
-field.
+The plan's detected OS description is factual; `os_policy` names the internal
+reviewed repository/kernel policy. `gpu_source=pci` indicates recovery before a
+working KFD driver, while `kfd+pci` means both sources agreed.
+
+Mixed Ryzen, Radeon, and Instinct classes are rejected on every host unless an
+explicit reviewed policy is added. Supplying multiple targets does not bypass
+that rule.
+
+The public plan labels are `gfx`, `gpu_class`, `gpu_source`, `os`, `os_policy`,
+`method`, `artifact`, `driver_mode`, `kernel_status`, `kernel_target`,
+`kernel_package`, and optional informational `product_name`. Collection values
+are rendered as sorted comma-separated fields; records containing commas are
+CSV-quoted.
+
+Inspect a kernel mismatch without changing the host:
+
+```bash
+sudo bash ./rocm-install.sh --skip-ssh --skip-reboot
+```
+
+Explicitly install the reviewed kernel but leave boot selection to the user:
+
+```bash
+sudo bash ./rocm-install.sh --prepare-kernel --skip-ssh --skip-reboot
+```
+
+Allow one verified GRUB boot attempt:
+
+```bash
+sudo bash ./rocm-install.sh \
+  --prepare-kernel \
+  --reboot-after-kernel \
+  --skip-ssh
+```
 
 Install the pip package set without changing SSH or rebooting automatically:
 
@@ -349,35 +378,36 @@ Log out and back in, or reboot, before relying on new group membership.
 
 ## Verification and Reboot
 
-When kernel preparation, a driver, group membership, or udev rule changes, the
-script marks the current run as requiring a reboot. Verification then reports
-that it is pending instead of claiming success, and the selected reboot policy
-runs. Kernel preparation stops before verification because ROCm has not yet
-been installed.
+Kernel preparation is separate from post-install reboot handling. A non-ready
+kernel never changes the system by default. Explicit preparation stops before
+driver or ROCm work and exits nonzero. Explicit one-shot reboot stores the
+expected target, GRUB entry, boot ID, and attempt count. A successful next boot
+clears the state; a failed switch prints manual recovery instructions and never
+reboots automatically again.
 
-After reboot, verify the APT or tarball installation with:
+Driver, group-membership, or udev changes can still require a post-install
+reboot. `--skip-reboot` suppresses that command. Verification reports pending
+instead of claiming success when the current run changed state that must be
+activated by reboot.
+
+After reboot, verify APT or tarball installations with:
 
 ```bash
 sudo bash ./rocm-install.sh --method apt --verify-only
 sudo bash ./rocm-install.sh --method tarball --verify-only
 ```
 
-For a pip installation, use:
+For pip:
 
 ```bash
 sudo bash ./rocm-install.sh --method pip --verify-only
 ```
 
-Post-install verification requires both `rocminfo` and `amd-smi version`. The
-installer requires a `rocminfo` agent for every requested `gfx` target. Extra
-visible `gfx` agents are allowed, but a missing requested target fails
-verification. `amd-smi version` must still report exactly ROCm 7.14.0. When the
-current run requires a reboot, verification remains deferred as described
-above. The `--method` value chooses the verification root, so the check invokes
-the selected method's absolute binaries rather than depending on a future
-profile update: APT uses
-`/opt/rocm/core-7.14/bin`, tarball uses `/opt/rocm/bin`, and pip uses
-`/opt/rocm-7.14.0-venv/bin`.
+Verification requires both `rocminfo` and `amd-smi version`. Every requested
+GFX target must appear as a `rocminfo` agent; extra agents are allowed.
+`amd-smi version` must report exactly ROCm 7.14.0. The selected method controls
+the absolute verification root: APT uses `/opt/rocm/core-7.14/bin`, tarball uses
+`/opt/rocm/bin`, and pip uses `/opt/rocm-7.14.0-venv/bin`.
 
 ## Uninstall
 
