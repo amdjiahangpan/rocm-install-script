@@ -30,6 +30,7 @@ resolve_install_plan() {
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
         [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE" ubuntu-24.04.4 "$gpu_classes" "$GPU_ARCHES")"
+        [driver_status]=ready
         [kernel_status]=ready
         [kernel_target]='6.14.*-oem'
         [kernel_package]=linux-oem-6.14
@@ -134,6 +135,7 @@ resolve_install_plan() {
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
         [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE" ubuntu-24.04.4 "$gpu_classes" "$GPU_ARCHES")"
+        [driver_status]=ready
         [kernel_status]=ready
         [kernel_target]='6.14.*-oem'
         [kernel_package]=linux-oem-6.14
@@ -171,6 +173,7 @@ resolve_install_plan() {
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
         [driver_mode]=inbox
+        [driver_status]=ready
         [kernel_status]=install-required
         [kernel_target]='6.14.*-oem'
         [kernel_package]=linux-oem-6.14
@@ -194,7 +197,7 @@ assert_status 21 "explicit kernel preparation reports pending reboot" capture_ma
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\nkernel:install-required' "${FLOW%$'\n'}" "explicit preparation stops after preparing the target kernel"
 
 resolve_install_plan() {
-    INSTALL_PLAN=([kernel_status]=ready [driver_mode]=inbox [method]=apt)
+    INSTALL_PLAN=([kernel_status]=ready [driver_mode]=inbox [driver_status]=ready [method]=apt)
     record_step plan
 }
 step_install_driver() { record_step driver; return 47; }
@@ -203,6 +206,37 @@ assert_status 47 "driver migration preserves its failure status" capture_main_ou
 assert_contains "$MAIN_OUTPUT" "driver migration" "driver failure identifies the failed stage"
 assert_contains "$MAIN_OUTPUT" "status=47" "driver failure reports the preserved status"
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm\ndriver' "${FLOW%$'\n'}" "driver failure stops every later lifecycle stage"
+
+resolve_install_plan() {
+    INSTALL_PLAN=([kernel_status]=ready [driver_mode]=dkms [driver_status]=reboot-required [method]=apt)
+    record_step plan
+}
+step_install_driver() { fail "pending driver activation must stop before migration"; }
+handle_reboot() { record_step reboot; }
+FLOW=""
+assert_status 24 "pending driver activation returns a distinct nonzero status" capture_main_output --gpu-arch gfx1201 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "driver activation" "pending driver status explains the required reboot"
+assert_eq $'root\nsystem\ngpu:gfx1201\nplan\nprint-plan\nconfirm\nreboot' "${FLOW%$'\n'}" "pending driver activation stops before prerequisites and ROCm"
+
+resolve_install_plan() {
+    INSTALL_PLAN=([kernel_status]=ready [driver_mode]=inbox [driver_status]=runtime-failed [method]=apt)
+    record_step plan
+}
+handle_reboot() { fail "runtime failure must not reboot"; }
+FLOW=""
+assert_status 23 "broken inbox runtime fails before every mutation" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
+assert_contains "$MAIN_OUTPUT" "driver runtime" "broken inbox runtime identifies the failure"
+assert_eq $'root\nsystem\ngpu:gfx1151\nplan\nprint-plan\nconfirm' "${FLOW%$'\n'}" "broken inbox runtime performs no driver, prerequisite, or ROCm step"
+
+resolve_install_plan() {
+    INSTALL_PLAN=([kernel_status]=ready [driver_mode]=dkms [driver_status]=install-required [method]=apt)
+    record_step plan
+}
+step_install_driver() { record_step driver; DRIVER_ACTIVATION_REQUIRED=true; }
+handle_reboot() { record_step reboot; }
+FLOW=""
+assert_status 24 "new driver installation stops for activation" capture_main_output --gpu-arch gfx1201 --non-interactive --skip-reboot
+assert_eq $'root\nsystem\ngpu:gfx1201\nplan\nprint-plan\nconfirm\ndriver\nreboot' "${FLOW%$'\n'}" "new driver activation stops before prerequisites and ROCm"
 
 MOCK_DKMS_PACKAGE_VERSION=''
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
@@ -320,10 +354,30 @@ MOCK_DKMS_PACKAGE_VERSION=''
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
 MOCK_DKMS_STATUS=''
 assert_eq install-required "$(resolve_driver_status dkms)" "missing DKMS resolves install-required"
-assert_eq ready "$(resolve_driver_status inbox)" "inbox without DKMS residue resolves ready"
+assert_eq runtime-failed "$(resolve_driver_status inbox)" "inbox without an active runtime fails closed"
 assert_eq 'kernel:install-required' "$(resolve_install_actions install-required ready apt)" "kernel action blocks later plan actions"
-assert_eq $'driver:migration-required\nrocm:apt' "$(resolve_install_actions ready migration-required apt)" "driver migration precedes ROCm installation"
+assert_eq 'driver:migration-required' "$(resolve_install_actions ready migration-required apt)" "driver migration blocks ROCm until activation"
 assert_eq 'rocm:apt' "$(resolve_install_actions ready ready apt)" "ready host plans only ROCm installation"
+
+inbox_kfd_root="${ROOT_DIR}/tests/fixtures/aup-395-23/kfd"
+AMDGPU_RUNTIME_KFD_ROOT=$inbox_kfd_root
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.14.0-37-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
+assert_success "matching inbox module and KFD target are active" amdgpu_inbox_runtime_is_active gfx1151
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.14.0-37-generic/updates/dkms/amdgpu.ko.zst'
+assert_fails "DKMS module path is not an active inbox driver" amdgpu_inbox_runtime_is_active gfx1151
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.14.0-37-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
+AMDGPU_RUNTIME_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd"
+assert_fails "inbox driver without matching KFD is not active" amdgpu_inbox_runtime_is_active gfx1151
+AMDGPU_RUNTIME_KFD_ROOT=$inbox_kfd_root
+MOCK_DKMS_PACKAGE_VERSION=''
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
+MOCK_DKMS_STATUS=''
+assert_eq ready "$(resolve_driver_status inbox gfx1151)" "active inbox runtime resolves ready"
+AMDGPU_RUNTIME_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd"
+assert_eq runtime-failed "$(resolve_driver_status inbox gfx1151)" "broken inbox runtime fails closed"
+AMDGPU_RUNTIME_KFD_ROOT=$runtime_pci_root
+AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
+assert_eq 'driver:runtime-failed' "$(resolve_install_actions ready runtime-failed apt)" "runtime-failed driver blocks ROCm action"
 
 reset_test_state
 MOCK_DKMS_PACKAGE_VERSION=31.30.1

@@ -351,6 +351,8 @@ dkms() {
     [[ "${1:-}" == status && -n "$MOCK_DKMS_STATUS" ]] || return 1
     printf '%s\n' "$MOCK_DKMS_STATUS"
 }
+amdgpu_inbox_runtime_is_active() { return 0; }
+amdgpu_dkms_runtime_is_active() { return 0; }
 mktemp() {
     printf '%s\n' "${TEST_TEMP_ROOT}/mock-tarball"
 }
@@ -417,9 +419,9 @@ assert_not_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "au
 multi_gfxes=$'gfx1200\ngfx1201'
 multi_packages=$'amdrocm-core-sdk7.14-gfx1200\namdrocm-core-sdk7.14-gfx1201'
 multi_pip_requirement='rocm[libraries,device-gfx1200,device-gfx1201]==7.14.0'
-MOCK_DKMS_PACKAGE_VERSION=""
-MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=""
-MOCK_DKMS_STATUS=""
+MOCK_DKMS_PACKAGE_VERSION=$REAL_DKMS_PACKAGE_VERSION
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$REAL_DKMS_FIRMWARE_VERSION
+MOCK_DKMS_STATUS="amdgpu/6.19.14-2364437.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=""
 MOCK_FAIL_FRAGMENT=""
@@ -454,11 +456,10 @@ MOCK_DKMS_PACKAGE_VERSION=31.30.1
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=31.30.1
 MOCK_DKMS_STATUS='amdgpu/31.30.1, 7.0.0, x86_64: installed'
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=true
-assert_success "mocked DKMS APT lifecycle migrates an old driver" run_mocked_main apt --gpu-arch gfx1201 --driver-mode dkms --dkms-cleanup always
+assert_status 24 "mocked DKMS APT lifecycle stops after migrating an old driver" run_mocked_main apt --gpu-arch gfx1201 --driver-mode dkms --dkms-cleanup always
 assert_contains "$RECORDED_COMMANDS" "dpkg --purge amdgpu-dkms amdgpu-dkms-firmware" "DKMS main flow purges the exact old driver packages"
-assert_command_before "dpkg --purge amdgpu-dkms amdgpu-dkms-firmware" "apt-get update" "$RECORDED_COMMANDS" "driver migration completes before prerequisite APT work"
 assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "DKMS main flow installs AMDGPU 31.40"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk7.14-gfx1201" "DKMS main flow installs its APT package"
+assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk7.14-gfx1201" "driver activation boundary prevents ROCm installation"
 
 MOCK_DKMS_PACKAGE_VERSION=31.30.1
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
@@ -481,13 +482,16 @@ assert_not_contains "$MANAGED_FILES" "/etc/profile.d/rocm.sh" "failed legacy mig
 
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=""
 MOCK_FAIL_FRAGMENT=""
+MOCK_DKMS_PACKAGE_VERSION=$REAL_DKMS_PACKAGE_VERSION
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$REAL_DKMS_FIRMWARE_VERSION
+MOCK_DKMS_STATUS="amdgpu/6.19.14-2364437.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
 assert_success "mocked tarball lifecycle runs through the real steps" run_mocked_main tarball --gpu-arch gfx942 --driver-mode dkms
 assert_contains "$RECORDED_COMMANDS" "therock-dist-linux-gfx94X-dcgpu-7.14.0.tar.gz" "Instinct main flow downloads the reviewed tarball"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "explicit DKMS main flow installs AMDGPU 31.40"
+assert_not_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "clean DKMS is retained during tarball installation"
 
-MOCK_DKMS_PACKAGE_VERSION=""
-MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=""
-MOCK_DKMS_STATUS=""
+MOCK_DKMS_PACKAGE_VERSION=$REAL_DKMS_PACKAGE_VERSION
+MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$REAL_DKMS_FIRMWARE_VERSION
+MOCK_DKMS_STATUS="amdgpu/6.19.14-2364437.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
 MOCK_FAIL_FRAGMENT=""
 assert_success "mocked multi-GFX pip lifecycle runs through the real steps" run_mocked_main pip --gpu-arch gfx1201 --gpu-arch gfx1200

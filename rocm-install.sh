@@ -22,6 +22,8 @@ KERNEL_MIN_FREE_KIB=524288
 EXIT_KERNEL_ACTION_REQUIRED=20
 EXIT_KERNEL_REBOOT_REQUIRED=21
 EXIT_KERNEL_REBOOT_FAILED=22
+EXIT_DRIVER_RUNTIME_FAILED=23
+EXIT_DRIVER_REBOOT_REQUIRED=24
 
 ARTIFACT_DATA='gfx950|gfx950|device-gfx950|therock-dist-linux-gfx950-dcgpu-7.14.0.tar.gz
 gfx942|gfx942|device-gfx942|therock-dist-linux-gfx94X-dcgpu-7.14.0.tar.gz
@@ -99,6 +101,7 @@ reset_defaults() {
     DRIVER_MODE=auto
     SHOW_HELP=false
     REBOOT_REQUIRED=false
+    DRIVER_ACTIVATION_REQUIRED=false
 }
 
 reset_defaults
@@ -1419,6 +1422,21 @@ amdgpu_dkms_runtime_is_active() {
     ((matched_devices > 0))
 }
 
+amdgpu_inbox_runtime_is_active() {
+    local expected_gfxes=${1:-} module_path kfd_root=${AMDGPU_RUNTIME_KFD_ROOT:-${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}} kfd_gfxes
+
+    [[ $# -eq 1 ]] || return 1
+    expected_gfxes=$(normalize_gfxes "$expected_gfxes") || return 1
+    if [[ -n ${AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE:-} ]]; then
+        module_path=$AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE
+    else
+        module_path=$(capture_cmd modinfo -F filename amdgpu) || return 1
+    fi
+    [[ "$module_path" == */kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko* && "$module_path" != */updates/dkms/* ]] || return 1
+    kfd_gfxes=$(detect_gpu_architectures "$kfd_root") || return 1
+    [[ "$kfd_gfxes" == "$expected_gfxes" ]]
+}
+
 resolve_driver_status() {
     local driver_mode=${1:-} gfxes=${2:-${INSTALL_PLAN[gfxes]:-}} detection_status
 
@@ -1432,7 +1450,13 @@ resolve_driver_status() {
     [[ $detection_status -eq 0 || $detection_status -eq 1 ]] || return "$detection_status"
     case "$driver_mode" in
         inbox)
-            if [[ $detection_status -eq 0 ]]; then printf '%s\n' migration-required; else printf '%s\n' ready; fi
+            if [[ $detection_status -eq 0 ]]; then
+                printf '%s\n' migration-required
+            elif amdgpu_inbox_runtime_is_active "$gfxes"; then
+                printf '%s\n' ready
+            else
+                printf '%s\n' runtime-failed
+            fi
             ;;
         dkms)
             if [[ $detection_status -eq 1 ]]; then
@@ -1453,13 +1477,16 @@ resolve_install_actions() {
 
     [[ $# -eq 3 ]] || return 1
     case "$kernel_status" in ready|install-required|reboot-required) ;; *) return 1 ;; esac
-    case "$driver_status" in ready|install-required|migration-required|reboot-required) ;; *) return 1 ;; esac
+    case "$driver_status" in ready|install-required|migration-required|reboot-required|runtime-failed) ;; *) return 1 ;; esac
     case "$method" in apt|pip|tarball) ;; *) return 1 ;; esac
     if [[ "$kernel_status" != ready ]]; then
         printf 'kernel:%s\n' "$kernel_status"
         return 0
     fi
-    [[ "$driver_status" == ready ]] || printf 'driver:%s\n' "$driver_status"
+    if [[ "$driver_status" != ready ]]; then
+        printf 'driver:%s\n' "$driver_status"
+        return 0
+    fi
     printf 'rocm:%s\n' "$method"
 }
 
@@ -1544,6 +1571,7 @@ migrate_driver() {
             if [[ $detection_status -eq 0 ]]; then
                 remove_existing_amdgpu_dkms || return $?
                 REBOOT_REQUIRED=true
+                DRIVER_ACTIVATION_REQUIRED=true
             fi
             ;;
         dkms)
@@ -1552,6 +1580,7 @@ migrate_driver() {
                     return 0
                 fi
                 REBOOT_REQUIRED=true
+                DRIVER_ACTIVATION_REQUIRED=true
                 return 0
             fi
             [[ $detection_status -eq 1 ]] || remove_existing_amdgpu_dkms || return $?
@@ -1560,6 +1589,7 @@ migrate_driver() {
             detect_existing_amdgpu_dkms || return $?
             amdgpu_dkms_is_clean_3140 || return 1
             REBOOT_REQUIRED=true
+            DRIVER_ACTIVATION_REQUIRED=true
             ;;
     esac
 }
@@ -1973,6 +2003,22 @@ report_kernel_reboot_required() {
         "${KERNEL_VERSION:-unknown}" "${INSTALL_PLAN[kernel_target]:-unknown}" "${INSTALL_PLAN[kernel_package]:-unknown}" >&2
 }
 
+
+report_driver_runtime_failed() {
+    printf 'ROCm driver runtime failed: mode=%s kernel=%s gfx=%s. The selected driver is not active; no ROCm packages were changed.\n' \
+        "${INSTALL_PLAN[driver_mode]:-unknown}" "${KERNEL_VERSION:-unknown}" "${GPU_ARCHES//$'\n'/,}" >&2
+}
+
+report_driver_activation_required() {
+    printf 'ROCm driver activation required: mode=%s kernel=%s gfx=%s. Reboot once, verify KFD and the active module, then run the installer again.\n' \
+        "${INSTALL_PLAN[driver_mode]:-unknown}" "${KERNEL_VERSION:-unknown}" "${GPU_ARCHES//$'\n'/,}" >&2
+}
+
+stop_for_driver_activation() {
+    report_driver_activation_required
+    run_stage 'driver activation reboot' handle_reboot || return $?
+    return "$EXIT_DRIVER_REBOOT_REQUIRED"
+}
 main() {
     local status
 
@@ -2038,7 +2084,21 @@ main() {
         report_kernel_reboot_required
         return "$EXIT_KERNEL_REBOOT_REQUIRED"
     fi
+    case "${INSTALL_PLAN[driver_status]}" in
+        runtime-failed)
+            report_driver_runtime_failed
+            return "$EXIT_DRIVER_RUNTIME_FAILED"
+            ;;
+        reboot-required)
+            stop_for_driver_activation
+            return $?
+            ;;
+    esac
     run_stage 'driver migration' step_install_driver || return $?
+    if [[ "$DRIVER_ACTIVATION_REQUIRED" == true ]]; then
+        stop_for_driver_activation
+        return $?
+    fi
     run_stage 'prerequisite installation' step_prerequisites || return $?
     run_stage 'ROCm installation' step_install_rocm || return $?
     run_stage 'SSH configuration' step_ssh_config || return $?
