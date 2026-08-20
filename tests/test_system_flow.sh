@@ -363,6 +363,9 @@ inbox_kfd_root="${ROOT_DIR}/tests/fixtures/aup-395-23/kfd"
 AMDGPU_RUNTIME_KFD_ROOT=$inbox_kfd_root
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.14.0-37-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
 assert_success "matching inbox module and KFD target are active" amdgpu_inbox_runtime_is_active gfx1151
+rm "${runtime_device_root}/driver"
+assert_fails "inbox runtime rejects an unbound AMD display device" amdgpu_inbox_runtime_is_active gfx1151
+ln -s "$runtime_driver_root" "${runtime_device_root}/driver"
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.14.0-37-generic/updates/dkms/amdgpu.ko.zst'
 assert_fails "DKMS module path is not an active inbox driver" amdgpu_inbox_runtime_is_active gfx1151
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.14.0-37-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'

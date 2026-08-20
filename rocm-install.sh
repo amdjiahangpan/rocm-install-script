@@ -1475,9 +1475,12 @@ amdgpu_dkms_runtime_is_active() {
 }
 
 amdgpu_inbox_runtime_is_active() {
-    local expected_gfxes=${1:-} module_path kfd_root=${AMDGPU_RUNTIME_KFD_ROOT:-${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}} kfd_gfxes
+    local expected_gfxes=${1:-} module_path
+    local kfd_root=${AMDGPU_RUNTIME_KFD_ROOT:-${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}} kfd_gfxes
+    local pci_root=${AMDGPU_RUNTIME_PCI_ROOT:-${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}}
+    local device_path vendor pci_class driver_path matched_devices=0
 
-    [[ $# -eq 1 ]] || return 1
+    [[ $# -eq 1 && -d "$pci_root" ]] || return 1
     expected_gfxes=$(normalize_gfxes "$expected_gfxes") || return 1
     if [[ -n ${AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE:-} ]]; then
         module_path=$AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE
@@ -1486,7 +1489,23 @@ amdgpu_inbox_runtime_is_active() {
     fi
     [[ "$module_path" == */kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko* && "$module_path" != */updates/dkms/* ]] || return 1
     kfd_gfxes=$(detect_gpu_architectures "$kfd_root") || return 1
-    [[ "$kfd_gfxes" == "$expected_gfxes" ]]
+    [[ "$kfd_gfxes" == "$expected_gfxes" ]] || return 1
+    for device_path in "$pci_root"/*; do
+        [[ -d "$device_path" && -r "$device_path/vendor" && -r "$device_path/class" ]] || continue
+        IFS= read -r vendor < "$device_path/vendor" || continue
+        IFS= read -r pci_class < "$device_path/class" || continue
+        vendor=$(normalize_pci_id "$vendor") || continue
+        [[ "$vendor" == 1002 ]] || continue
+        pci_class=$(trim_field "$pci_class")
+        pci_class=${pci_class#0x}
+        pci_class=${pci_class#0X}
+        [[ "$pci_class" =~ ^[[:xdigit:]]{6}$ && "${pci_class:0:2}" == 03 ]] || continue
+        [[ -L "$device_path/driver" ]] || return 1
+        driver_path=$(readlink -f "$device_path/driver") || return 1
+        [[ "${driver_path##*/}" == amdgpu ]] || return 1
+        matched_devices=$((matched_devices + 1))
+    done
+    ((matched_devices > 0))
 }
 
 resolve_driver_status() {
