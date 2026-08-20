@@ -16,6 +16,15 @@ rx9060_fixture="${ROOT_DIR}/tests/fixtures/rx-9060-xt"
 rx9060_kfd_root="${rx9060_fixture}/kfd"
 rx9060_pci_root="${rx9060_fixture}/pci"
 missing_pci_root="${TEST_TEMP_ROOT}/missing-pci-root"
+r9700_fixture="${ROOT_DIR}/tests/fixtures/r9700-four-gpu"
+r9700_kfd_root="${r9700_fixture}/kfd"
+r9700_pci_root="${TEST_TEMP_ROOT}/r9700-pci"
+r9700_driver_root="${TEST_TEMP_ROOT}/drivers/amdgpu"
+cp -a "${r9700_fixture}/pci" "$r9700_pci_root"
+mkdir -p "$r9700_driver_root"
+for r9700_device_root in "$r9700_pci_root"/*; do
+    ln -s "$r9700_driver_root" "${r9700_device_root}/driver"
+done
 
 assert_eq "gfx1151" "$(kfd_gfx_target 110501)" "KFD 110501 decodes with AMD's decimal-field algorithm"
 assert_eq "gfx90a" "$(kfd_gfx_target 90010)" "KFD stepping is rendered as a hexadecimal gfx digit"
@@ -24,6 +33,8 @@ assert_eq "AMD Radeon 8060S Graphics" "$(detect_gpu_product_names "$observed_drm
 assert_eq $'gfx1151\ngfx1201' "$(detect_gpu_architectures "$heterogeneous_kfd_root")" "heterogeneous KFD nodes normalize all supported targets"
 assert_eq 'gfx1200|radeon' "$(lookup_pci_gpu_record 7590 c0)" "RX 9060 XT PCI ID resolves to gfx1200 Radeon"
 assert_eq 'gfx1200|radeon' "$(detect_gpu_architectures_from_pci "$rx9060_pci_root")" "PCI fallback recovers RX 9060 XT before KFD exists"
+assert_eq gfx1201 "$(detect_gpu_architectures "$r9700_kfd_root")" "four R9700 KFD nodes normalize to gfx1201"
+assert_eq 4 "$(count_kfd_gpu_devices "$r9700_kfd_root")" "four R9700 KFD nodes preserve the physical GPU count"
 assert_eq $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700' "$(detect_gpu_product_names "$heterogeneous_drm_root" "$heterogeneous_ids")" "every DRM card contributes its direct or exact-ID product name"
 strict_product_names=''
 if strict_product_names=$(bash -Eeuo pipefail -c '
@@ -68,6 +79,22 @@ assert_eq gfx1200 "$GPU_ARCHES" "RX 9060 identity stores gfx1200"
 assert_eq radeon "$GPU_CLASSES" "RX 9060 identity stores its Radeon class"
 assert_eq kfd+pci "$GPU_DETECTION_SOURCE" "matching KFD and PCI records report both sources"
 
+GPU_DETECTION_KFD_ROOT=$r9700_kfd_root
+GPU_DETECTION_PCI_ROOT=$r9700_pci_root
+GPU_DETECTION_DRM_ROOT="${TEST_TEMP_ROOT}/missing-drm-root"
+GPU_ARCHES=''
+assert_success "valid R9700 KFD accepts bound unmapped PCI devices" resolve_gpu_identity
+assert_eq gfx1201 "$GPU_ARCHES" "four R9700 cards select one gfx1201 artifact architecture"
+assert_eq 4 "$GPU_DEVICE_COUNT" "R9700 identity preserves four physical devices"
+assert_eq kfd+unmapped-pci "$GPU_DETECTION_SOURCE" "R9700 identity reports unmapped PCI evidence"
+assert_contains "$GPU_UNMAPPED_PCI" "1002:7001" "unmapped R9700 evidence includes the first PCI ID"
+assert_contains "$GPU_UNMAPPED_PCI" "1002:7004" "unmapped R9700 evidence includes the fourth PCI ID"
+rm "${r9700_pci_root}/0000:04:00.0/driver"
+GPU_ARCHES=''
+assert_fails "one unbound unmapped PCI device fails closed" resolve_gpu_identity
+ln -s "$r9700_driver_root" "${r9700_pci_root}/0000:04:00.0/driver"
+
+GPU_DETECTION_PCI_ROOT=$rx9060_pci_root
 GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
 GPU_ARCHES=''
 assert_success "RX 9060 PCI fallback resolves when KFD is unavailable" resolve_gpu_identity

@@ -99,6 +99,8 @@ reset_defaults() {
     GPU_PRODUCT_NAMES=''
     GPU_CLASSES=''
     GPU_DETECTION_SOURCE=''
+    GPU_DEVICE_COUNT=0
+    GPU_UNMAPPED_PCI=''
     OS_DESCRIPTION=''
     unset GPU_ARCH GPU_PRODUCT_NAME
     INSTALL_PLAN=()
@@ -411,6 +413,29 @@ detect_gpu_architectures() {
     normalize_gfxes "$(printf '%s\n' "${gfxes[@]}")"
 }
 
+count_kfd_gpu_devices() {
+    local root=${1:-} properties_file line cpu_cores='' gfx_target_version='' gfx count=0
+
+    [[ $# -eq 1 && -d "$root" ]] || return 1
+    for properties_file in "$root"/*/properties; do
+        [[ -r "$properties_file" ]] || continue
+        cpu_cores=''
+        gfx_target_version=''
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            case "$line" in
+                cpu_cores_count\ *) cpu_cores=${line#cpu_cores_count } ;;
+                gfx_target_version\ *) gfx_target_version=${line#gfx_target_version } ;;
+            esac
+        done < "$properties_file"
+        [[ "$cpu_cores" == 0 && -n "$gfx_target_version" && "$gfx_target_version" != 0 ]] || continue
+        gfx=$(kfd_gfx_target "$gfx_target_version") || return 1
+        validate_artifact_gfx "$gfx" || return 1
+        count=$((count + 1))
+    done
+    ((count > 0)) || return 1
+    printf '%s\n' "$count"
+}
+
 kfd_gpu_nodes_present() {
     local root=${1:-} properties_file line cpu_cores='' gfx_target_version=''
 
@@ -487,14 +512,74 @@ detect_gpu_architectures_from_pci() {
         if ! record=$(lookup_pci_gpu_record "$device" "$revision"); then
             normalized_device=$(normalize_pci_id "$device" 2>/dev/null || printf '%s' "$device")
             normalized_revision=$(normalize_pci_id "$revision" 2>/dev/null || printf '%s' "$revision")
-            printf 'Unsupported AMD display PCI device 1002:%s revision %s; provide the complete reviewed --gpu-arch set.\n' \
-                "$normalized_device" "$normalized_revision" >&2
+            if [[ "${PCI_ALLOW_UNMAPPED:-false}" != true ]]; then
+                printf 'Unsupported AMD display PCI device 1002:%s revision %s; provide the complete reviewed --gpu-arch set.\n' \
+                    "$normalized_device" "$normalized_revision" >&2
+            fi
             return 2
         fi
         records+=("$record")
     done
     ((${#records[@]})) || return 1
     normalize_records "$(printf '%s\n' "${records[@]}")"
+}
+
+count_amd_display_pci_devices() {
+    local root=${1:-} device_path vendor pci_class count=0
+
+    [[ $# -eq 1 && -d "$root" ]] || return 1
+    for device_path in "$root"/*; do
+        [[ -d "$device_path" && -r "$device_path/vendor" && -r "$device_path/class" ]] || continue
+        IFS= read -r vendor < "$device_path/vendor" || continue
+        IFS= read -r pci_class < "$device_path/class" || continue
+        vendor=$(normalize_pci_id "$vendor") || continue
+        [[ "$vendor" == 1002 ]] || continue
+        pci_class=$(trim_field "$pci_class")
+        pci_class=${pci_class#0x}
+        pci_class=${pci_class#0X}
+        [[ "$pci_class" =~ ^[[:xdigit:]]{6}$ && "${pci_class:0:2}" == 03 ]] || continue
+        count=$((count + 1))
+    done
+    ((count > 0)) || return 1
+    printf '%s\n' "$count"
+}
+
+detect_unmapped_bound_pci_devices() {
+    local root=${1:-} device_path bdf vendor device revision pci_class driver_path normalized_device normalized_revision
+    local unmapped_count=0
+
+    [[ $# -eq 1 && -d "$root" ]] || return 1
+    for device_path in "$root"/*; do
+        [[ -d "$device_path" && -r "$device_path/vendor" && -r "$device_path/device" && -r "$device_path/revision" && -r "$device_path/class" ]] || continue
+        IFS= read -r vendor < "$device_path/vendor" || continue
+        IFS= read -r device < "$device_path/device" || continue
+        IFS= read -r revision < "$device_path/revision" || continue
+        IFS= read -r pci_class < "$device_path/class" || continue
+        vendor=$(normalize_pci_id "$vendor") || continue
+        [[ "$vendor" == 1002 ]] || continue
+        pci_class=$(trim_field "$pci_class")
+        pci_class=${pci_class#0x}
+        pci_class=${pci_class#0X}
+        [[ "$pci_class" =~ ^[[:xdigit:]]{6}$ && "${pci_class:0:2}" == 03 ]] || continue
+        if lookup_pci_gpu_record "$device" "$revision" >/dev/null 2>&1; then
+            continue
+        fi
+        normalized_device=$(normalize_pci_id "$device") || return 1
+        normalized_revision=$(normalize_pci_id "$revision") || return 1
+        if [[ ! -L "$device_path/driver" ]]; then
+            printf 'Unmapped AMD display PCI device 1002:%s revision %s is not bound to amdgpu.\n' "$normalized_device" "$normalized_revision" >&2
+            return 1
+        fi
+        driver_path=$(readlink -f "$device_path/driver") || return 1
+        if [[ "${driver_path##*/}" != amdgpu ]]; then
+            printf 'Unmapped AMD display PCI device 1002:%s revision %s is bound to %s, not amdgpu.\n' "$normalized_device" "$normalized_revision" "${driver_path##*/}" >&2
+            return 1
+        fi
+        bdf=${device_path##*/}
+        printf '%s|1002:%s|%s\n' "$bdf" "$normalized_device" "$normalized_revision"
+        unmapped_count=$((unmapped_count + 1))
+    done
+    ((unmapped_count > 0))
 }
 
 lookup_amdgpu_product_name() {
@@ -564,13 +649,15 @@ resolve_gpu_identity() {
     local requested_arches=${GPU_ARCHES:-}
     local kfd_root=${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}
     local pci_root=${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}
-    local kfd_gfxes='' pci_records='' pci_gfxes='' pci_classes='' record gfx gpu_class
-    local kfd_status=1 pci_status=1
+    local kfd_gfxes='' pci_records='' pci_gfxes='' pci_classes='' unmapped_pci='' record gfx gpu_class
+    local kfd_count=0 pci_count=0 kfd_status=1 pci_status=1
 
     GPU_ARCHES=''
     GPU_CLASSES=''
     GPU_PRODUCT_NAMES=''
     GPU_DETECTION_SOURCE=''
+    GPU_DEVICE_COUNT=0
+    GPU_UNMAPPED_PCI=''
     [[ $# -eq 0 ]] || return 64
     if [[ -n "$requested_arches" ]]; then
         GPU_ARCHES=$(normalize_gfxes "$requested_arches") || return 64
@@ -578,11 +665,13 @@ resolve_gpu_identity() {
     else
         if kfd_gfxes=$(detect_gpu_architectures "$kfd_root"); then
             kfd_status=0
+            kfd_count=$(count_kfd_gpu_devices "$kfd_root") || return 1
         elif kfd_gpu_nodes_present "$kfd_root"; then
             return 1
         fi
-        if pci_records=$(detect_gpu_architectures_from_pci "$pci_root"); then
+        if pci_records=$(PCI_ALLOW_UNMAPPED=$([[ $kfd_status -eq 0 ]] && printf true || printf false) detect_gpu_architectures_from_pci "$pci_root"); then
             pci_status=0
+            pci_count=$(count_amd_display_pci_devices "$pci_root") || return 1
             while IFS='|' read -r gfx gpu_class; do
                 pci_gfxes+="${pci_gfxes:+$'\n'}${gfx}"
                 pci_classes+="${pci_classes:+$'\n'}${gpu_class}"
@@ -591,19 +680,33 @@ resolve_gpu_identity() {
             pci_classes=$(normalize_records "$pci_classes") || return 1
         else
             pci_status=$?
-            [[ $pci_status -eq 1 ]] || return "$pci_status"
+            if [[ $pci_status -eq 2 && $kfd_status -eq 0 ]]; then
+                pci_count=$(count_amd_display_pci_devices "$pci_root") || return 1
+                unmapped_pci=$(detect_unmapped_bound_pci_devices "$pci_root") || return 1
+                [[ $pci_count -eq $kfd_count ]] || return 1
+            elif [[ $pci_status -ne 1 ]]; then
+                return "$pci_status"
+            fi
         fi
         if [[ $kfd_status -eq 0 && $pci_status -eq 0 ]]; then
-            [[ "$kfd_gfxes" == "$pci_gfxes" ]] || return 1
+            [[ "$kfd_gfxes" == "$pci_gfxes" && $kfd_count -eq $pci_count ]] || return 1
             GPU_ARCHES=$kfd_gfxes
             GPU_CLASSES=$pci_classes
+            GPU_DEVICE_COUNT=$kfd_count
             GPU_DETECTION_SOURCE=kfd+pci
+        elif [[ $kfd_status -eq 0 && $pci_status -eq 2 ]]; then
+            GPU_ARCHES=$kfd_gfxes
+            GPU_DEVICE_COUNT=$kfd_count
+            GPU_UNMAPPED_PCI=$unmapped_pci
+            GPU_DETECTION_SOURCE=kfd+unmapped-pci
         elif [[ $kfd_status -eq 0 ]]; then
             GPU_ARCHES=$kfd_gfxes
+            GPU_DEVICE_COUNT=$kfd_count
             GPU_DETECTION_SOURCE=kfd
         elif [[ $pci_status -eq 0 ]]; then
             GPU_ARCHES=$pci_gfxes
             GPU_CLASSES=$pci_classes
+            GPU_DEVICE_COUNT=$pci_count
             GPU_DETECTION_SOURCE=pci
         else
             return 1
