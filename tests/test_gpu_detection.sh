@@ -133,6 +133,16 @@ if unknown_pci_output=$(detect_gpu_architectures_from_pci "$mixed_pci_root" 2>&1
     fail "one unknown AMD display device rejects the complete PCI inventory"
 fi
 assert_contains "$unknown_pci_output" "1002:9999" "unknown PCI failure reports the exact AMD device ID"
+
+GPU_DETECTION_KFD_ROOT=$rx9060_kfd_root
+GPU_DETECTION_PCI_ROOT=$mixed_pci_root
+GPU_ARCHES=''
+identity_unknown_pci_output=''
+if identity_unknown_pci_output=$(resolve_gpu_identity 2>&1); then
+    fail "valid KFD cannot hide an unknown AMD PCI display device"
+fi
+assert_contains "$identity_unknown_pci_output" "1002:9999" "identity failure preserves the unknown PCI diagnostic"
+assert_eq "" "$GPU_ARCHES" "identity failure leaves no partial KFD architecture set"
 GPU_DETECTION_PCI_ROOT=$missing_pci_root
 
 no_gpu_kfd_root="${TEST_TEMP_ROOT}/kfd-no-gpu"

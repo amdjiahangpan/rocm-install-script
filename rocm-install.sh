@@ -485,7 +485,7 @@ detect_gpu_architectures_from_pci() {
             normalized_revision=$(normalize_pci_id "$revision" 2>/dev/null || printf '%s' "$revision")
             printf 'Unsupported AMD display PCI device 1002:%s revision %s; provide the complete reviewed --gpu-arch set.\n' \
                 "$normalized_device" "$normalized_revision" >&2
-            return 1
+            return 2
         fi
         records+=("$record")
     done
@@ -585,6 +585,9 @@ resolve_gpu_identity() {
             done <<< "$pci_records"
             pci_gfxes=$(normalize_gfxes "$pci_gfxes") || return 1
             pci_classes=$(normalize_records "$pci_classes") || return 1
+        else
+            pci_status=$?
+            [[ $pci_status -eq 1 ]] || return "$pci_status"
         fi
         if [[ $kfd_status -eq 0 && $pci_status -eq 0 ]]; then
             [[ "$kfd_gfxes" == "$pci_gfxes" ]] || return 1
