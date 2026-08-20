@@ -15,6 +15,10 @@ ROCM_GPG_KEY_URL=${ROCM_PACKAGES_ROOT}/gpg/rocm.gpg
 ROCM_WHL_INDEX=https://repo.amd.com/rocm/whl-multi-arch/
 ROCM_TARBALL_ROOT=https://repo.amd.com/rocm/tarball-multi-arch/
 ROCM_MULTIARCH_TARBALL_ARTIFACT=therock-dist-linux-multiarch-7.14.0.tar.gz
+ROCM_GPU_LOOKUP_URL='https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile'
+ROCM_GPU_LOOKUP_ZH_URL='https://github.com/amdjiahangpan/hello-rocm/blob/master/docs/zh/00-environment/rocm-gpu-architecture-table.md'
+ROCM_RUNFILE_NAME=rocm-installer-7.14.0-7.run
+ROCM_RUNFILE_URL="https://repo.radeon.com/rocm/installer/rocm-runfile-installer/rocm-rel-7.14/${ROCM_RUNFILE_NAME}"
 AMDGPU_REPOSITORY=https://repo.radeon.com/amdgpu/${AMDGPU_RELEASE}/ubuntu
 AMDGPU_GPG_KEY_URL=https://repo.radeon.com/rocm/rocm.gpg.key
 SUPPORTED_OS_KEYS=ubuntu-24.04.4,ubuntu-26.04
@@ -1946,8 +1950,8 @@ ROCm 7.14.0 Installer v${SCRIPT_VERSION}
 Usage: sudo $0 [options]
 
 Options:
-  --method METHOD          Installation method: apt, pip, or tarball
-  --gpu-arch ARCH          Override automatic KFD gfx detection; may be repeated
+  --method METHOD          Installation method: apt, pip, tarball, or runfile
+  --gpu-arch ARCH          Override automatic GFX detection; may be repeated
   --driver-mode MODE       Driver mode: auto, inbox, or dkms
   --skip-ssh               Skip SSH setup
   --root-password PASS     Set the root password during installation
@@ -1960,6 +1964,13 @@ Options:
   --non-interactive        Run without prompts
   --dkms-cleanup POLICY    DKMS cleanup: auto, ask, always, or never
   --help, -h               Show this help
+
+GPU architecture lookup:
+  ${ROCM_GPU_LOOKUP_URL}
+  ${ROCM_GPU_LOOKUP_ZH_URL}
+
+Explicit all-architecture fallback:
+  --method runfile --gpu-arch all  (official Runfile gfx=all)
 EOF
 }
 
@@ -1972,7 +1983,7 @@ parse_args() {
         case "$1" in
             --method)
                 require_option_value "$1" "${2:-}" || return 1
-                case "$2" in apt|pip|tarball) INSTALL_METHOD=$2 ;; *) return 1 ;; esac
+                case "$2" in apt|pip|tarball|runfile) INSTALL_METHOD=$2 ;; *) return 1 ;; esac
                 shift 2
                 ;;
             --gpu-arch)
@@ -2040,7 +2051,10 @@ parse_args() {
     done
     [[ "$VERIFY_ONLY" != true || "$UNINSTALL" != true ]] || return 1
     [[ "$REBOOT_AFTER_KERNEL" != true || "$PREPARE_KERNEL" == true ]] || return 1
-    [[ "$PREPARE_KERNEL" != true || ( "$VERIFY_ONLY" != true && "$UNINSTALL" != true ) ]]
+    [[ "$PREPARE_KERNEL" != true || ( "$VERIFY_ONLY" != true && "$UNINSTALL" != true ) ]] || return 1
+    if [[ "$GPU_ARCHES" == all || "$GPU_ARCHES" == *$'\n'all || "$GPU_ARCHES" == all$'\n'* || "$GPU_ARCHES" == *$'\n'all$'\n'* ]]; then
+        [[ "$GPU_ARCHES" == all && "$INSTALL_METHOD" == runfile ]] || return 1
+    fi
 }
 
 preflight_error() {
