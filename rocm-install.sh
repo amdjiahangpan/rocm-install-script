@@ -2304,10 +2304,11 @@ do_uninstall_runfile() {
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
     }
-    runfile_layout_is_ready && {
+    if runfile_layout_exists; then
         run_cmd rm -rf "$temp_dir" || return $?
+        printf '%s\n' 'Runfile uninstall incomplete: the installation root still exists; marker and environment files were preserved.' >&2
         return 1
-    }
+    fi
     cleanup_managed_rocm_environment || {
         status=$?
         run_cmd rm -rf "$temp_dir" || return $?
@@ -2327,8 +2328,8 @@ do_uninstall() {
         return $?
     fi
     runfile_state=$(runfile_state_path) || return 1
-    if [[ -e "$runfile_state" ]]; then
-        printf 'Package-manager uninstall refused: a Runfile installation is registered. Use: sudo %s --method runfile --gpu-arch all --uninstall\n' "$0" >&2
+    if [[ -e "$runfile_state" ]] || runfile_layout_exists; then
+        printf 'Package-manager uninstall refused: a Runfile installation or partial root exists. Use: sudo %s --method runfile --gpu-arch all --uninstall\n' "$0" >&2
         return 1
     fi
 
