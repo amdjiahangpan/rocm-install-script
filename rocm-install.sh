@@ -1702,10 +1702,10 @@ amdgpu_dkms_runtime_is_active() {
     local expected_gfxes=${1:-${INSTALL_PLAN[gfxes]:-}} module_path
     local pci_root=${AMDGPU_RUNTIME_PCI_ROOT:-${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}}
     local kfd_root=${AMDGPU_RUNTIME_KFD_ROOT:-${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}}
-    local kfd_gfxes pci_records pci_gfxes='' record gfx gpu_class
+    local kfd_gfxes pci_records='' pci_gfxes='' record gfx gpu_class pci_status=1 kfd_count pci_count
     local device_path vendor device revision pci_class driver_path matched_devices=0
-    [[ $# -le 1 ]] || return 1
 
+    [[ $# -le 1 ]] || return 1
     expected_gfxes=$(normalize_gfxes "$expected_gfxes") || return 1
     if [[ -n ${AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE:-} ]]; then
         module_path=$AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE
@@ -1713,16 +1713,23 @@ amdgpu_dkms_runtime_is_active() {
         module_path=$(capture_cmd modinfo -F filename amdgpu) || return 1
     fi
     [[ "$module_path" == */updates/dkms/amdgpu.ko* ]] || return 1
-
     kfd_gfxes=$(detect_gpu_architectures "$kfd_root") || return 1
     [[ "$kfd_gfxes" == "$expected_gfxes" ]] || return 1
-    pci_records=$(detect_gpu_architectures_from_pci "$pci_root") || return 1
-    while IFS='|' read -r gfx gpu_class; do
-        pci_gfxes+="${pci_gfxes:+$'\n'}${gfx}"
-    done <<< "$pci_records"
-    pci_gfxes=$(normalize_gfxes "$pci_gfxes") || return 1
-    [[ "$pci_gfxes" == "$expected_gfxes" ]] || return 1
-
+    kfd_count=$(count_kfd_gpu_devices "$kfd_root") || return 1
+    pci_count=$(count_amd_display_pci_devices "$pci_root") || return 1
+    [[ $pci_count -eq $kfd_count ]] || return 1
+    if pci_records=$(PCI_ALLOW_UNMAPPED=true detect_gpu_architectures_from_pci "$pci_root"); then
+        pci_status=0
+        while IFS='|' read -r gfx gpu_class; do
+            pci_gfxes+="${pci_gfxes:+$'\n'}${gfx}"
+        done <<< "$pci_records"
+        pci_gfxes=$(normalize_gfxes "$pci_gfxes") || return 1
+        [[ "$pci_gfxes" == "$expected_gfxes" ]] || return 1
+    else
+        pci_status=$?
+        [[ $pci_status -eq 2 ]] || return "$pci_status"
+        detect_unmapped_bound_pci_devices "$pci_root" >/dev/null || return 1
+    fi
     for device_path in "$pci_root"/*; do
         [[ -d "$device_path" && -r "$device_path/vendor" && -r "$device_path/device" && -r "$device_path/revision" && -r "$device_path/class" ]] || continue
         IFS= read -r vendor < "$device_path/vendor" || continue
@@ -1735,15 +1742,18 @@ amdgpu_dkms_runtime_is_active() {
         pci_class=${pci_class#0x}
         pci_class=${pci_class#0X}
         [[ "$pci_class" =~ ^[[:xdigit:]]{6}$ && "${pci_class:0:2}" == 03 ]] || continue
-        record=$(lookup_pci_gpu_record "$device" "$revision") || return 1
-        gfx=${record%%|*}
-        [[ "$expected_gfxes" == "$gfx" || "$expected_gfxes" == "$gfx"$'\n'* || "$expected_gfxes" == *$'\n'"$gfx" || "$expected_gfxes" == *$'\n'"$gfx"$'\n'* ]] || return 1
+        if record=$(lookup_pci_gpu_record "$device" "$revision"); then
+            gfx=${record%%|*}
+            [[ "$expected_gfxes" == "$gfx" || "$expected_gfxes" == "$gfx"$'\n'* || "$expected_gfxes" == *$'\n'"$gfx" || "$expected_gfxes" == *$'\n'"$gfx"$'\n'* ]] || return 1
+        else
+            [[ $pci_status -eq 2 ]] || return 1
+        fi
         [[ -L "$device_path/driver" ]] || return 1
         driver_path=$(readlink -f "$device_path/driver") || return 1
         [[ "${driver_path##*/}" == amdgpu ]] || return 1
         matched_devices=$((matched_devices + 1))
     done
-    ((matched_devices > 0))
+    [[ $matched_devices -eq $pci_count ]]
 }
 
 amdgpu_inbox_runtime_is_active() {
