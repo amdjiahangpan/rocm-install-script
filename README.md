@@ -247,9 +247,11 @@ or activation leaves the previous installation in place when rollback succeeds.
 downloads the pinned official `rocm-installer-7.14.0-7.run` and executes:
 
 ```text
-deps=install rocm gfx=all compo=core,core-dev
+deps=install rocm gfx=all compo=core,core-dev target=/opt
 ```
 
+The explicit `target=/opt` contract installs this release at
+`/opt/rocm/core-7.14.0`; Runfile verification and uninstall use that exact root.
 The Runfile performs its built-in checksum validation. AMDGPU driver management
 remains in this script's driver state machine; the Runfile path does not install
 a second driver. Before any driver or prerequisite mutation, the installer
@@ -461,8 +463,9 @@ GFX target must appear as a `rocminfo` agent; extra agents are allowed.
 `rocminfo` can query `gfx1201`; this workflow does not require a separate HIP
 test per card.
 
-APT and Runfile use `/opt/rocm/core-7.14/bin`, tarball uses `/opt/rocm/bin`, and
-pip uses `/opt/rocm-7.14.0-venv/bin`.
+APT uses `/opt/rocm/core-7.14/bin`, Runfile uses
+`/opt/rocm/core-7.14.0/bin`, tarball uses `/opt/rocm/bin`, and pip uses
+`/opt/rocm-7.14.0-venv/bin`.
 
 ## Uninstall
 
@@ -476,9 +479,10 @@ Runfile rather than recursive deletion:
 sudo bash ./rocm-install.sh --method runfile --gpu-arch all --uninstall
 ```
 
-That invokes `uninstall-rocm gfx=all`, removes the Runfile registration marker,
-and leaves AMDGPU installed. Package-manager and Runfile layouts cannot be
-uninstalled through each other's path.
+That invokes `uninstall-rocm gfx=all target=/opt`, removes the script-managed
+profile/linker/udev files and Runfile registration marker, and leaves AMDGPU
+installed. Package-manager and Runfile layouts cannot be uninstalled through
+each other's path.
 
 All uninstall paths deliberately leave `amdgpu-dkms`, the SSH package/drop-in,
 optional tools, NTP configuration, user group membership, and kernel packages

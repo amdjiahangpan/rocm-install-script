@@ -14,6 +14,10 @@ rocm_apt_installed_package_candidates() {
     [[ -z "$MOCK_APT_CONFLICT" ]] || printf '%s\n' "$MOCK_APT_CONFLICT"
     return 0
 }
+detect_installed_amdrocm_packages() {
+    [[ -z "$MOCK_APT_CONFLICT" ]] || printf '%s\n' "$MOCK_APT_CONFLICT"
+    return 0
+}
 MOCK_LEGACY_CONFLICT=''
 detect_legacy_rocm_packages() {
     [[ -z "$MOCK_LEGACY_CONFLICT" ]] || printf '%s\n' "$MOCK_LEGACY_CONFLICT"
@@ -22,7 +26,7 @@ detect_legacy_rocm_packages() {
 MOCK_RUNFILE_INSTALLED_GFX=$'gfx1030\ngfx1100\ngfx1101\ngfx1102\ngfx1103\ngfx1150\ngfx1151\ngfx1152\ngfx1153\ngfx1200\ngfx1201\ngfx908\ngfx90a\ngfx942\ngfx950'
 capture_cmd() {
     recording_run_cmd "$@"
-    if [[ "$1" == bash && "$2" == *.run && "${3:-}" == gfx=list-installed ]]; then
+    if [[ "$1" == bash && "$2" == *.run && "$*" == *gfx=list-installed* ]]; then
         printf '%s\n' "$MOCK_RUNFILE_INSTALLED_GFX"
         return 0
     fi
@@ -63,6 +67,7 @@ assert_success "Runfile all installation executes the pinned installer" install_
 assert_contains "$RECORDED_COMMANDS" "curl -fL --retry 0 --output" "Runfile installation downloads one staged artifact"
 assert_contains "$RECORDED_COMMANDS" "$ROCM_RUNFILE_URL" "Runfile installation downloads only the pinned official URL"
 assert_contains "$RECORDED_COMMANDS" "deps=install rocm gfx=all compo=core\,core-dev" "Runfile installation requests all architectures and core development components"
+assert_contains "$RECORDED_COMMANDS" "target=/opt" "Runfile installation pins the official target root"
 assert_success "installed Runfile layout is ready" runfile_installation_is_ready
 assert_eq function "$(type -t validate_rocm_layout_compatibility || true)" "layout conflict checks use a production helper"
 state_path=$(runfile_state_path)
@@ -130,6 +135,7 @@ INSTALL_METHOD=runfile
 reset_test_state
 assert_success "Runfile uninstall invokes the pinned official uninstaller" do_uninstall_runfile
 assert_contains "$RECORDED_COMMANDS" "uninstall-rocm gfx=all" "Runfile uninstall requests all installed architectures"
+assert_contains "$RECORDED_COMMANDS" "target=/opt" "Runfile uninstall pins the official target root"
 assert_contains "$RECORDED_COMMANDS" "/etc/profile.d/rocm.sh" "Runfile uninstall removes the managed profile"
 assert_contains "$RECORDED_COMMANDS" "/etc/ld.so.conf.d/rocm.conf" "Runfile uninstall removes the managed linker config"
 assert_contains "$RECORDED_COMMANDS" "/etc/udev/rules.d/70-amdgpu.rules" "Runfile uninstall removes the managed udev rules"

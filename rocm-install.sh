@@ -1584,7 +1584,7 @@ runfile_state_path() {
 }
 
 runfile_layout_is_ready() {
-    local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-7.14}
+    local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-7.14.0}
 
     [[ -x "$install_root/bin/rocminfo" && -x "$install_root/bin/amd-smi" ]]
 }
@@ -1618,10 +1618,21 @@ all_supported_gfxes() {
 }
 
 runfile_reports_all_architectures() {
-    local runfile_path=${1:-} output token gfx detected=''
+    local runfile_path=${1:-} output token gfx detected='' query_root status normalized_output
 
     [[ $# -eq 1 && -f "$runfile_path" ]] || return 1
-    output=$(capture_cmd bash "$runfile_path" gfx=list-installed) || return $?
+    query_root=$(mktemp -d "${runfile_path%/*}/query.XXXXXX") || return $?
+    if output=$(capture_cmd bash "$runfile_path" --target "$query_root" gfx=list-installed target=/opt); then
+        status=0
+    else
+        status=$?
+        run_cmd rm -rf "$query_root" || return $?
+        return "$status"
+    fi
+    run_cmd rm -rf "$query_root" || return $?
+    normalized_output=${output//$'\n'/ }
+    normalized_output=${normalized_output,,}
+    [[ " $normalized_output " != *' all '* ]] || return 0
     for token in $output; do
         if [[ "$token" =~ gfx[[:xdigit:]]+ ]]; then
             gfx=${BASH_REMATCH[0],,}
@@ -1650,15 +1661,32 @@ mark_runfile_installation() {
 }
 
 rollback_runfile_installation() {
-    local runfile_path=${1:-}
+    local runfile_path=${1:-} rollback_root status
 
     [[ $# -eq 1 && -f "$runfile_path" ]] || return 1
-    run_cmd bash "$runfile_path" uninstall-rocm gfx=all || return $?
+    rollback_root=$(mktemp -d "${runfile_path%/*}/rollback.XXXXXX") || return $?
+    if run_cmd bash "$runfile_path" --target "$rollback_root" uninstall-rocm gfx=all target=/opt; then
+        status=0
+    else
+        status=$?
+    fi
+    run_cmd rm -rf "$rollback_root" || return $?
+    [[ $status -eq 0 ]] || return "$status"
     ! runfile_layout_is_ready
 }
 
+detect_installed_amdrocm_packages() {
+    local query_output package package_status
+
+    query_output=$(dpkg-query -W -f='${binary:Package}\t${db:Status-Status}\n' 2>/dev/null) || return $?
+    while IFS=$'\t' read -r package package_status; do
+        [[ "$package_status" == installed && "$package" == amdrocm* ]] || continue
+        printf '%s\n' "$package"
+    done <<< "$query_output" | LC_ALL=C sort -u
+}
+
 validate_rocm_layout_compatibility() {
-    local intended_method=${1:-} state_path apt_packages legacy_packages
+    local intended_method=${1:-} state_path amdrocm_packages legacy_packages
     local pip_root=${ROCM_PIP_ROOT:-/opt/rocm-${ROCM_VERSION}-venv}
     local tarball_root=${ROCM_TARBALL_INSTALL_ROOT:-/opt/rocm-${ROCM_VERSION}}
 
@@ -1666,15 +1694,15 @@ validate_rocm_layout_compatibility() {
     case "$intended_method" in apt|pip|tarball|runfile) ;; *) return 1 ;; esac
     state_path=$(runfile_state_path) || return 1
     if [[ "$intended_method" != runfile ]]; then
-        if [[ -e "$state_path" ]]; then
-            printf '%s installation refused: a Runfile installation is registered. Use --method runfile --gpu-arch all --uninstall first.\n' "$intended_method" >&2
+        if [[ -e "$state_path" || runfile_layout_is_ready ]]; then
+            printf '%s installation refused: a Runfile installation exists. Use --method runfile --gpu-arch all --uninstall first.\n' "$intended_method" >&2
             return 1
         fi
         return 0
     fi
-    apt_packages=$(rocm_apt_installed_package_candidates) || return $?
+    amdrocm_packages=$(detect_installed_amdrocm_packages) || return $?
     legacy_packages=$(detect_legacy_rocm_packages) || return $?
-    if [[ -n "$apt_packages" || -n "$legacy_packages" ]]; then
+    if [[ -n "$amdrocm_packages" || -n "$legacy_packages" ]]; then
         printf 'Runfile installation refused: package-manager ROCm packages are installed.\n' >&2
         return 1
     fi
@@ -1689,22 +1717,28 @@ validate_rocm_layout_compatibility() {
 }
 
 install_rocm_runfile() {
-    local temp_dir runfile_path status
+    local temp_dir runfile_path install_root status
 
     [[ "${INSTALL_PLAN[artifacts]:-}" == "$ROCM_RUNFILE_URL" && "${INSTALL_PLAN[runfile_gfx]:-}" == all ]] || return 1
     validate_rocm_layout_compatibility runfile || return $?
     temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/rocm-runfile.XXXXXX") || return $?
     runfile_path="${temp_dir}/${ROCM_RUNFILE_NAME}"
+    install_root="${temp_dir}/install-extract"
     run_cmd curl -fL --retry 0 --output "$runfile_path" "$ROCM_RUNFILE_URL" || {
         status=$?
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
     }
-    if runfile_installation_is_ready && runfile_reports_all_architectures "$runfile_path"; then
-        run_cmd rm -rf "$temp_dir"
-        return $?
+    if runfile_installation_is_ready; then
+        if runfile_reports_all_architectures "$runfile_path"; then
+            run_cmd rm -rf "$temp_dir"
+            return $?
+        fi
+        status=$?
+        run_cmd rm -rf "$temp_dir" || return $?
+        return "$status"
     fi
-    run_cmd bash "$runfile_path" deps=install rocm gfx=all compo=core,core-dev || {
+    run_cmd bash "$runfile_path" --target "$install_root" deps=install rocm gfx=all compo=core,core-dev target=/opt || {
         status=$?
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
@@ -2100,7 +2134,7 @@ user_has_required_groups() {
 rocm_install_root() {
     case "${INSTALL_PLAN[method]:-${INSTALL_METHOD:-}}" in
         apt) printf '%s\n' /opt/rocm/core-7.14 ;;
-        runfile) printf '%s\n' "${ROCM_RUNFILE_ROOT:-/opt/rocm/core-7.14}" ;;
+        runfile) printf '%s\n' "${ROCM_RUNFILE_ROOT:-/opt/rocm/core-7.14.0}" ;;
         pip) printf '/opt/rocm-%s-venv\n' "$ROCM_VERSION" ;;
         tarball) printf '%s\n' /opt/rocm ;;
         *) return 1 ;;
@@ -2255,7 +2289,7 @@ do_uninstall_runfile() {
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
     }
-    run_cmd bash "$runfile_path" uninstall-rocm gfx=all || {
+    run_cmd bash "$runfile_path" --target "${temp_dir}/uninstall-extract" uninstall-rocm gfx=all target=/opt || {
         status=$?
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
