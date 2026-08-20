@@ -1990,7 +1990,8 @@ user_has_required_groups() {
 
 rocm_install_root() {
     case "${INSTALL_PLAN[method]:-${INSTALL_METHOD:-}}" in
-        apt|runfile) printf '%s\n' /opt/rocm/core-7.14 ;;
+        apt) printf '%s\n' /opt/rocm/core-7.14 ;;
+        runfile) printf '%s\n' "${ROCM_RUNFILE_ROOT:-/opt/rocm/core-7.14}" ;;
         pip) printf '/opt/rocm-%s-venv\n' "$ROCM_VERSION" ;;
         tarball) printf '%s\n' /opt/rocm ;;
         *) return 1 ;;
@@ -2120,9 +2121,47 @@ rocm_apt_verification_root_exists() {
     [[ -d "$active_root/core-7.14" ]]
 }
 
+do_uninstall_runfile() {
+    local answer state_path temp_dir runfile_path status
+
+    state_path=$(runfile_state_path) || return 1
+    [[ -f "$state_path" ]] || {
+        printf '%s\n' 'Runfile uninstall refused: no registered ROCm 7.14 Runfile installation was found.' >&2
+        return 1
+    }
+    if [[ "${NON_INTERACTIVE:-false}" != true ]]; then
+        read -r -p 'Remove the ROCm 7.14 Runfile installation? [y/N] ' answer || return 1
+        [[ "$answer" == y || "$answer" == Y || "$answer" == yes || "$answer" == YES ]] || return 1
+    fi
+    temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/rocm-runfile-uninstall.XXXXXX") || return $?
+    runfile_path="${temp_dir}/${ROCM_RUNFILE_NAME}"
+    run_cmd curl -fL --retry 0 --output "$runfile_path" "$ROCM_RUNFILE_URL" || {
+        status=$?
+        run_cmd rm -rf "$temp_dir" || return $?
+        return "$status"
+    }
+    run_cmd bash "$runfile_path" uninstall-rocm gfx=all || {
+        status=$?
+        run_cmd rm -rf "$temp_dir" || return $?
+        return "$status"
+    }
+    runfile_layout_is_ready && {
+        run_cmd rm -rf "$temp_dir" || return $?
+        return 1
+    }
+    run_cmd rm -f "$state_path" || return $?
+    run_cmd rm -rf "$temp_dir" || return $?
+    printf '%s\n' 'ROCm 7.14.0 Runfile installation removed; AMDGPU driver was left installed.'
+}
+
 do_uninstall() {
     local output package failure_status=0 command_status
     local -a packages=()
+
+    if [[ "${INSTALL_METHOD:-}" == runfile ]]; then
+        do_uninstall_runfile
+        return $?
+    fi
 
     if [[ "${NON_INTERACTIVE:-false}" != true ]]; then
         read -r -p 'Remove ROCm 7.14.0? [y/N] ' output || return 1

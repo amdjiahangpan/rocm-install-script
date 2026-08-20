@@ -20,10 +20,14 @@ runfile_run_cmd() {
         output_path=$6
         printf 'mock runfile\n' > "$output_path"
     elif [[ "$1" == bash && "$2" == *.run ]]; then
-        mkdir -p "${ROCM_RUNFILE_ROOT}/bin"
-        printf '#!/usr/bin/env bash\n' > "${ROCM_RUNFILE_ROOT}/bin/rocminfo"
-        printf '#!/usr/bin/env bash\n' > "${ROCM_RUNFILE_ROOT}/bin/amd-smi"
-        chmod +x "${ROCM_RUNFILE_ROOT}/bin/rocminfo" "${ROCM_RUNFILE_ROOT}/bin/amd-smi"
+        if [[ "$*" == *uninstall-rocm* ]]; then
+            rm -rf "$ROCM_RUNFILE_ROOT"
+        else
+            mkdir -p "${ROCM_RUNFILE_ROOT}/bin"
+            printf '#!/usr/bin/env bash\n' > "${ROCM_RUNFILE_ROOT}/bin/rocminfo"
+            printf '#!/usr/bin/env bash\n' > "${ROCM_RUNFILE_ROOT}/bin/amd-smi"
+            chmod +x "${ROCM_RUNFILE_ROOT}/bin/rocminfo" "${ROCM_RUNFILE_ROOT}/bin/amd-smi"
+        fi
     elif [[ "$1" == rm ]]; then
         command rm "${@:2}"
     fi
@@ -53,5 +57,19 @@ MOCK_APT_CONFLICT=amdrocm-core-sdk7.14-gfx1200
 reset_test_state
 assert_fails "Runfile installation rejects an existing APT ROCm layout" install_rocm_runfile
 assert_eq '' "$RECORDED_COMMANDS" "APT conflict is detected before Runfile download"
+
+MOCK_APT_CONFLICT=''
+reset_test_state
+assert_success "Runfile layout can be reinstalled for uninstall testing" install_rocm_runfile
+INSTALL_METHOD=runfile
+INSTALL_PLAN=([method]=runfile)
+assert_eq "$ROCM_RUNFILE_ROOT" "$(rocm_install_root)" "Runfile verification uses the configured core root"
+NON_INTERACTIVE=true
+reset_test_state
+assert_success "Runfile uninstall invokes the pinned official uninstaller" do_uninstall_runfile
+assert_contains "$RECORDED_COMMANDS" "uninstall-rocm gfx=all" "Runfile uninstall requests all installed architectures"
+assert_not_contains "$RECORDED_COMMANDS" "rm -rf ${ROCM_RUNFILE_ROOT}" "Runfile root is removed by the official uninstaller, not emulated cleanup"
+assert_fails "Runfile uninstall removes the registered layout" runfile_installation_is_ready
+assert_fails "Runfile uninstall removes the installer marker" test -e "$(runfile_state_path)"
 
 finish_tests "runfile"
