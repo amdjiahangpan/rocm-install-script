@@ -101,6 +101,7 @@ reset_defaults() {
     GPU_DETECTION_SOURCE=''
     GPU_DEVICE_COUNT=0
     GPU_UNMAPPED_PCI=''
+    GPU_MODEL_NAME=''
     OS_DESCRIPTION=''
     unset GPU_ARCH GPU_PRODUCT_NAME
     INSTALL_PLAN=()
@@ -645,12 +646,43 @@ detect_gpu_product_names() {
     normalize_records "$(printf '%s\n' "${product_names[@]}")"
 }
 
+print_gpu_lookup_guidance() {
+    printf 'GPU architecture lookup:\n  %s\n  %s\n' "$ROCM_GPU_LOOKUP_URL" "$ROCM_GPU_LOOKUP_ZH_URL" >&2
+}
+
+print_runfile_all_fallback() {
+    printf 'If the architecture is uncertain or heterogeneous, use the explicit fallback:\n  sudo %s --method runfile --gpu-arch all --skip-ssh\n' "$0" >&2
+}
+
+prompt_manual_gpu_identity() {
+    local pci_root=${1:-} model gfx pci_count=0
+
+    [[ $# -eq 1 && "${NON_INTERACTIVE:-false}" != true ]] || return 1
+    is_interactive_terminal || return 1
+    print_gpu_lookup_guidance
+    read -r -p 'Enter the GPU/APU model name (informational): ' model || return 1
+    read -r -p 'Enter the reviewed GFX target (for example gfx1201): ' gfx || return 1
+    model=$(trim_field "$model")
+    gfx=${gfx,,}
+    [[ -n "$model" && "$model" != *$'\n'* && "$model" != *$'\r'* ]] || return 1
+    gfx=$(normalize_gfxes "$gfx") || return 1
+    [[ "$gfx" != *$'\n'* ]] || return 1
+    if pci_count=$(count_amd_display_pci_devices "$pci_root" 2>/dev/null); then :; else pci_count=0; fi
+    GPU_ARCHES=$gfx
+    GPU_CLASSES=$(resolve_gpu_classes "$gfx") || return 1
+    GPU_MODEL_NAME=$model
+    GPU_PRODUCT_NAMES=$model
+    GPU_DEVICE_COUNT=$pci_count
+    GPU_DETECTION_SOURCE=manual
+}
+
 resolve_gpu_identity() {
     local requested_arches=${GPU_ARCHES:-}
     local kfd_root=${GPU_DETECTION_KFD_ROOT:-/sys/class/kfd/kfd/topology/nodes}
     local pci_root=${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}
-    local kfd_gfxes='' pci_records='' pci_gfxes='' pci_classes='' unmapped_pci='' record gfx gpu_class
+    local kfd_gfxes='' requested_gfxes='' pci_records='' pci_gfxes='' pci_classes='' unmapped_pci='' detected_product_names='' record gfx gpu_class
     local kfd_count=0 pci_count=0 kfd_status=1 pci_status=1
+    local expected_classes
 
     GPU_ARCHES=''
     GPU_CLASSES=''
@@ -658,9 +690,24 @@ resolve_gpu_identity() {
     GPU_DETECTION_SOURCE=''
     GPU_DEVICE_COUNT=0
     GPU_UNMAPPED_PCI=''
+    GPU_MODEL_NAME=''
     [[ $# -eq 0 ]] || return 64
     if [[ -n "$requested_arches" ]]; then
-        GPU_ARCHES=$(normalize_gfxes "$requested_arches") || return 64
+        requested_gfxes=$(normalize_gfxes "$requested_arches") || return 64
+        if kfd_gfxes=$(detect_gpu_architectures "$kfd_root"); then
+            if [[ "$requested_gfxes" != "$kfd_gfxes" ]]; then
+                printf 'Requested GFX %s does not match detected KFD GFX %s.\n' "${requested_gfxes//$'\n'/,}" "${kfd_gfxes//$'\n'/,}" >&2
+                print_gpu_lookup_guidance
+                print_runfile_all_fallback
+                return 64
+            fi
+            GPU_DEVICE_COUNT=$(count_kfd_gpu_devices "$kfd_root") || return 1
+        elif kfd_gpu_nodes_present "$kfd_root"; then
+            return 1
+        elif pci_count=$(count_amd_display_pci_devices "$pci_root" 2>/dev/null); then
+            GPU_DEVICE_COUNT=$pci_count
+        fi
+        GPU_ARCHES=$requested_gfxes
         GPU_DETECTION_SOURCE=explicit
     else
         if kfd_gfxes=$(detect_gpu_architectures "$kfd_root"); then
@@ -684,7 +731,7 @@ resolve_gpu_identity() {
                 pci_count=$(count_amd_display_pci_devices "$pci_root") || return 1
                 unmapped_pci=$(detect_unmapped_bound_pci_devices "$pci_root") || return 1
                 [[ $pci_count -eq $kfd_count ]] || return 1
-            elif [[ $pci_status -ne 1 ]]; then
+            elif [[ $pci_status -ne 1 && $pci_status -ne 2 ]]; then
                 return "$pci_status"
             fi
         fi
@@ -709,17 +756,20 @@ resolve_gpu_identity() {
             GPU_DEVICE_COUNT=$pci_count
             GPU_DETECTION_SOURCE=pci
         else
-            return 1
+            prompt_manual_gpu_identity "$pci_root" || return 1
         fi
     fi
-    local expected_classes
     expected_classes=$(resolve_gpu_classes "$GPU_ARCHES") || return 1
     if [[ -n "$GPU_CLASSES" ]]; then
         [[ "$GPU_CLASSES" == "$expected_classes" ]] || return 1
     else
         GPU_CLASSES=$expected_classes
     fi
-    GPU_PRODUCT_NAMES=$(detect_gpu_product_names "${GPU_DETECTION_DRM_ROOT:-/sys/class/drm}" "${AMDGPU_IDS_PATH:-/usr/share/libdrm/amdgpu.ids}" 2>/dev/null || true)
+    if detected_product_names=$(detect_gpu_product_names "${GPU_DETECTION_DRM_ROOT:-/sys/class/drm}" "${AMDGPU_IDS_PATH:-/usr/share/libdrm/amdgpu.ids}" 2>/dev/null); then
+        GPU_PRODUCT_NAMES=$detected_product_names
+    elif [[ -n "$GPU_MODEL_NAME" ]]; then
+        GPU_PRODUCT_NAMES=$GPU_MODEL_NAME
+    fi
 }
 
 install_plan_keys() {

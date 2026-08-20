@@ -184,6 +184,49 @@ assert_fails "informational product names cannot infer an architecture" resolve_
 assert_eq "" "$GPU_ARCHES" "failed automatic detection leaves no architecture collection"
 assert_eq "" "$GPU_PRODUCT_NAMES" "product names are not stored when no architecture is detected"
 
+manual_pci_root="${TEST_TEMP_ROOT}/manual-unknown-pci"
+mkdir -p "${manual_pci_root}/0000:05:00.0"
+printf '0x1002\n' > "${manual_pci_root}/0000:05:00.0/vendor"
+printf '0x7999\n' > "${manual_pci_root}/0000:05:00.0/device"
+printf '0x01\n' > "${manual_pci_root}/0000:05:00.0/revision"
+printf '0x030000\n' > "${manual_pci_root}/0000:05:00.0/class"
+MOCK_INTERACTIVE=true
+is_interactive_terminal() { [[ "$MOCK_INTERACTIVE" == true ]]; }
+NON_INTERACTIVE=false
+GPU_DETECTION_KFD_ROOT=$no_gpu_kfd_root
+GPU_DETECTION_PCI_ROOT=$manual_pci_root
+GPU_DETECTION_DRM_ROOT="${TEST_TEMP_ROOT}/missing-drm-root"
+GPU_ARCHES=''
+manual_prompt_output="${TEST_TEMP_ROOT}/manual-prompt-output"
+if resolve_gpu_identity <<< $'Radeon AI PRO R9700\ngfx1201' 2> "$manual_prompt_output"; then
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    fail "interactive unknown GPU accepts a reviewed manual GFX"
+fi
+assert_eq gfx1201 "$GPU_ARCHES" "manual recovery stores gfx1201"
+assert_eq radeon "$GPU_CLASSES" "manual recovery derives the Radeon class only from gfx1201"
+assert_eq manual "$GPU_DETECTION_SOURCE" "manual recovery records its source"
+assert_eq 'Radeon AI PRO R9700' "$GPU_MODEL_NAME" "manual model text is retained for display"
+assert_eq 1 "$GPU_DEVICE_COUNT" "manual PCI inventory records one physical device"
+assert_contains "$(<"$manual_prompt_output")" "$ROCM_GPU_LOOKUP_URL" "manual prompt prints the official lookup URL"
+assert_contains "$(<"$manual_prompt_output")" "$ROCM_GPU_LOOKUP_ZH_URL" "manual prompt prints the Chinese lookup URL"
+
+NON_INTERACTIVE=true
+GPU_ARCHES=''
+assert_fails "non-interactive unknown GPU requires --gpu-arch" resolve_gpu_identity
+
+GPU_DETECTION_KFD_ROOT=$r9700_kfd_root
+GPU_DETECTION_PCI_ROOT=$r9700_pci_root
+GPU_ARCHES=gfx1200
+manual_mismatch_output="${TEST_TEMP_ROOT}/manual-mismatch-output"
+if resolve_gpu_identity 2> "$manual_mismatch_output"; then
+    fail "explicit GFX that disagrees with KFD fails closed"
+fi
+assert_eq "" "$GPU_ARCHES" "manual mismatch clears the incorrect GFX"
+assert_contains "$(<"$manual_mismatch_output")" "--method runfile --gpu-arch all" "manual mismatch prints the explicit Runfile fallback"
+unset -f is_interactive_terminal
+NON_INTERACTIVE=false
+
 installer_source=$(<"${ROOT_DIR}/rocm-install.sh")
 assert_not_contains "$installer_source" "ROCM_714_MODEL_RECORDS" "installer has no model records"
 assert_not_contains "$installer_source" "--gpu-model" "installer has no model override"
