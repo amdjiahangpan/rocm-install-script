@@ -773,7 +773,7 @@ resolve_gpu_identity() {
 }
 
 install_plan_keys() {
-    printf '%s\n' gfxes gpu_classes gpu_source os_key os_description repo_slug method artifacts driver_mode driver_status actions kernel_status kernel_target kernel_package
+    printf '%s\n' gfxes gpu_count gpu_classes gpu_source lookup_url fallback_recommended os_key os_description repo_slug method artifacts driver_mode driver_status actions kernel_status kernel_target kernel_package
 }
 
 reset_install_plan() {
@@ -799,13 +799,13 @@ resolve_plan_artifacts() {
 }
 
 validate_install_plan() {
-    local key gfxes normalized_gfxes gpu_classes expected_classes os_key os_description expected_os_description os_record repo_slug
-    local expected_artifacts expected_driver expected_driver_status expected_actions normalized_product_names kernel_policy kernel_target kernel_package kernel_status
+    local key gfxes normalized_gfxes gpu_count gpu_classes expected_classes os_key os_description expected_os_description os_record repo_slug
+    local expected_artifacts expected_driver expected_driver_status expected_actions expected_fallback normalized_product_names normalized_unmapped kernel_policy kernel_target kernel_package kernel_status
 
-    [[ ${#INSTALL_PLAN[@]} -eq 14 || ${#INSTALL_PLAN[@]} -eq 15 ]] || return 1
+    [[ ${#INSTALL_PLAN[@]} -ge 17 && ${#INSTALL_PLAN[@]} -le 19 ]] || return 1
     for key in "${!INSTALL_PLAN[@]}"; do
         case "$key" in
-            gfxes|gpu_classes|gpu_source|os_key|os_description|repo_slug|method|artifacts|driver_mode|driver_status|actions|kernel_status|kernel_target|kernel_package|product_names) ;;
+            gfxes|gpu_count|gpu_classes|gpu_source|lookup_url|fallback_recommended|os_key|os_description|repo_slug|method|artifacts|driver_mode|driver_status|actions|kernel_status|kernel_target|kernel_package|product_names|unmapped_pci) ;;
             *) return 1 ;;
         esac
     done
@@ -815,10 +815,15 @@ validate_install_plan() {
     gfxes=${INSTALL_PLAN[gfxes]}
     normalized_gfxes=$(normalize_gfxes "$gfxes") || return 1
     [[ "$gfxes" == "$normalized_gfxes" ]] || return 1
+    gpu_count=${INSTALL_PLAN[gpu_count]}
+    [[ "$gpu_count" =~ ^[0-9]+$ && "$gpu_count" == "${GPU_DEVICE_COUNT:-0}" ]] || return 1
     gpu_classes=${INSTALL_PLAN[gpu_classes]}
     expected_classes=$(resolve_gpu_classes "$gfxes") || return 1
     [[ "$gpu_classes" == "$expected_classes" ]] || return 1
-    case "${INSTALL_PLAN[gpu_source]}" in explicit|kfd|pci|kfd+pci) ;; *) return 1 ;; esac
+    case "${INSTALL_PLAN[gpu_source]}" in explicit|manual|kfd|pci|kfd+pci|kfd+unmapped-pci) ;; *) return 1 ;; esac
+    [[ "${INSTALL_PLAN[lookup_url]}" == "$ROCM_GPU_LOOKUP_URL" ]] || return 1
+    if [[ "$gfxes" == *$'\n'* ]]; then expected_fallback=true; else expected_fallback=false; fi
+    [[ "${INSTALL_PLAN[fallback_recommended]}" == "$expected_fallback" ]] || return 1
     os_key=${INSTALL_PLAN[os_key]}
     os_description=${INSTALL_PLAN[os_description]}
     expected_os_description=${OS_DESCRIPTION:-"${OS_ID:-unknown} ${OS_VERSION:-unknown}"}
@@ -840,6 +845,10 @@ validate_install_plan() {
     [[ "${INSTALL_PLAN[driver_status]}" == "$expected_driver_status" ]] || return 1
     expected_actions=$(resolve_install_actions "$kernel_status" "$expected_driver_status" "${INSTALL_PLAN[method]}") || return 1
     [[ "${INSTALL_PLAN[actions]}" == "$expected_actions" ]] || return 1
+    if [[ -v 'INSTALL_PLAN[unmapped_pci]' ]]; then
+        normalized_unmapped=$(normalize_records "${INSTALL_PLAN[unmapped_pci]}") || return 1
+        [[ "${INSTALL_PLAN[unmapped_pci]}" == "$normalized_unmapped" && "${INSTALL_PLAN[gpu_source]}" == kfd+unmapped-pci ]] || return 1
+    fi
     if [[ -v 'INSTALL_PLAN[product_names]' ]]; then
         normalized_product_names=$(normalize_records "${INSTALL_PLAN[product_names]}") || return 1
         [[ "${INSTALL_PLAN[product_names]}" == "$normalized_product_names" ]] || return 1
@@ -847,7 +856,7 @@ validate_install_plan() {
 }
 
 resolve_install_plan() {
-    local os_key os_description os_record repo_slug artifacts driver_mode driver_status actions normalized_gfxes normalized_gpu_classes gpu_source
+    local os_key os_description os_record repo_slug artifacts driver_mode driver_status actions normalized_gfxes normalized_gpu_classes gpu_source fallback_recommended
     local kernel_policy kernel_target kernel_package kernel_status
     local normalized_product_names=''
 
@@ -867,8 +876,13 @@ resolve_install_plan() {
     if [[ -n ${GPU_CLASSES:-} ]]; then
         [[ "$GPU_CLASSES" == "$normalized_gpu_classes" ]] || return 1
     fi
+    if [[ "$normalized_gpu_classes" == *$'\n'* ]]; then
+        print_runfile_all_fallback
+        return 1
+    fi
     gpu_source=${GPU_DETECTION_SOURCE:-explicit}
-    case "$gpu_source" in explicit|kfd|pci|kfd+pci) ;; *) return 1 ;; esac
+    case "$gpu_source" in explicit|manual|kfd|pci|kfd+pci|kfd+unmapped-pci) ;; *) return 1 ;; esac
+    if [[ "$normalized_gfxes" == *$'\n'* ]]; then fallback_recommended=true; else fallback_recommended=false; fi
     if [[ -n ${GPU_PRODUCT_NAMES:-} ]]; then
         normalized_product_names=$(normalize_records "$GPU_PRODUCT_NAMES") || return 1
         [[ "$GPU_PRODUCT_NAMES" == "$normalized_product_names" ]] || return 1
@@ -884,8 +898,11 @@ resolve_install_plan() {
     artifacts=$(resolve_plan_artifacts "$INSTALL_METHOD" "$normalized_gfxes") || return 1
     INSTALL_PLAN=(
         [gfxes]="$normalized_gfxes"
+        [gpu_count]="${GPU_DEVICE_COUNT:-0}"
         [gpu_classes]="$normalized_gpu_classes"
         [gpu_source]="$gpu_source"
+        [lookup_url]="$ROCM_GPU_LOOKUP_URL"
+        [fallback_recommended]="$fallback_recommended"
         [os_key]="$os_key"
         [os_description]="$os_description"
         [repo_slug]="$repo_slug"
@@ -898,16 +915,15 @@ resolve_install_plan() {
         [kernel_target]="$kernel_target"
         [kernel_package]="$kernel_package"
     )
+    [[ -z "${GPU_UNMAPPED_PCI:-}" ]] || INSTALL_PLAN[unmapped_pci]=$GPU_UNMAPPED_PCI
     [[ -z "$normalized_product_names" ]] || INSTALL_PLAN[product_names]=$normalized_product_names
-    if validate_install_plan; then
-        return 0
-    fi
+    if validate_install_plan; then return 0; fi
     reset_install_plan
     return 1
 }
 
 print_install_plan() {
-    local gfx_csv gpu_class_csv artifact_csv action_csv product_name_csv output
+    local gfx_csv gpu_class_csv artifact_csv action_csv product_name_csv unmapped_pci_csv output
 
     validate_install_plan || return 1
     gfx_csv=$(records_to_csv "${INSTALL_PLAN[gfxes]}") || return 1
@@ -916,8 +932,11 @@ print_install_plan() {
     action_csv=$(records_to_csv "${INSTALL_PLAN[actions]}") || return 1
     output=$'INSTALL PLAN\n'
     output+="gfx=${gfx_csv}"$'\n'
+    output+="gpu_count=${INSTALL_PLAN[gpu_count]}"$'\n'
     output+="gpu_class=${gpu_class_csv}"$'\n'
     output+="gpu_source=${INSTALL_PLAN[gpu_source]}"$'\n'
+    output+="lookup_url=${INSTALL_PLAN[lookup_url]}"$'\n'
+    output+="fallback_recommended=${INSTALL_PLAN[fallback_recommended]}"$'\n'
     output+="os=${INSTALL_PLAN[os_description]}"$'\n'
     output+="os_policy=${INSTALL_PLAN[os_key]}"$'\n'
     output+="method=${INSTALL_PLAN[method]}"$'\n'
@@ -928,9 +947,16 @@ print_install_plan() {
     output+="kernel_status=${INSTALL_PLAN[kernel_status]}"$'\n'
     output+="kernel_target=${INSTALL_PLAN[kernel_target]}"$'\n'
     output+="kernel_package=${INSTALL_PLAN[kernel_package]}"$'\n'
+    if [[ -v 'INSTALL_PLAN[unmapped_pci]' ]]; then
+        unmapped_pci_csv=$(records_to_csv "${INSTALL_PLAN[unmapped_pci]}") || return 1
+        output+="unmapped_pci=${unmapped_pci_csv}"$'\n'
+    fi
     if [[ -v 'INSTALL_PLAN[product_names]' ]]; then
         product_name_csv=$(records_to_csv "${INSTALL_PLAN[product_names]}") || return 1
         output+="product_name=${product_name_csv}"$'\n'
+    fi
+    if [[ "${INSTALL_PLAN[fallback_recommended]}" == true ]]; then
+        output+="recommendation=--method runfile --gpu-arch all"$'\n'
     fi
     printf '%s' "$output"
 }
