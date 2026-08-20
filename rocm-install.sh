@@ -661,6 +661,11 @@ print_runfile_all_fallback() {
     printf 'If the architecture is uncertain or heterogeneous, use the explicit fallback:\n  sudo %s --method runfile --gpu-arch all --skip-ssh\n' "$0" >&2
 }
 
+print_official_runfile_all_command() {
+    printf 'Mixed GPU policy classes require the standalone official Runfile workflow:\n  curl -fsSLO %s\n  sudo bash %s deps=install rocm gfx=all compo=core,core-dev target=/opt\n' \
+        "$ROCM_RUNFILE_URL" "$ROCM_RUNFILE_NAME" >&2
+}
+
 prompt_manual_gpu_identity() {
     local pci_root=${1:-} model gfx pci_count=0
 
@@ -906,7 +911,7 @@ resolve_install_plan() {
         [[ "$GPU_CLASSES" == "$normalized_gpu_classes" ]] || return 1
     fi
     if [[ "$normalized_gpu_classes" == *$'\n'* ]]; then
-        print_runfile_all_fallback
+        print_official_runfile_all_command
         return 1
     fi
     gpu_source=${GPU_DETECTION_SOURCE:-explicit}
@@ -1582,6 +1587,11 @@ runfile_state_path() {
     [[ "$state_root" == /* ]] || return 1
     printf '%s/runfile-7.14-all\n' "${state_root%/}"
 }
+runfile_layout_exists() {
+    local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-7.14.0}
+    [[ -e "$install_root" ]]
+}
+
 
 runfile_layout_is_ready() {
     local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-7.14.0}
@@ -1662,7 +1672,6 @@ mark_runfile_installation() {
 
 rollback_runfile_installation() {
     local runfile_path=${1:-} rollback_root status
-
     [[ $# -eq 1 && -f "$runfile_path" ]] || return 1
     rollback_root=$(mktemp -d "${runfile_path%/*}/rollback.XXXXXX") || return $?
     if run_cmd bash "$runfile_path" --target "$rollback_root" uninstall-rocm gfx=all target=/opt; then
@@ -1672,7 +1681,7 @@ rollback_runfile_installation() {
     fi
     run_cmd rm -rf "$rollback_root" || return $?
     [[ $status -eq 0 ]] || return "$status"
-    ! runfile_layout_is_ready
+    ! runfile_layout_exists
 }
 
 detect_installed_amdrocm_packages() {
@@ -1694,7 +1703,7 @@ validate_rocm_layout_compatibility() {
     case "$intended_method" in apt|pip|tarball|runfile) ;; *) return 1 ;; esac
     state_path=$(runfile_state_path) || return 1
     if [[ "$intended_method" != runfile ]]; then
-        if [[ -e "$state_path" || runfile_layout_is_ready ]]; then
+        if [[ -e "$state_path" ]] || runfile_layout_exists; then
             printf '%s installation refused: a Runfile installation exists. Use --method runfile --gpu-arch all --uninstall first.\n' "$intended_method" >&2
             return 1
         fi
@@ -1710,7 +1719,7 @@ validate_rocm_layout_compatibility() {
     [[ ! -e "$tarball_root" ]] || { printf 'Runfile installation refused: tarball layout exists at %s.\n' "$tarball_root" >&2; return 1; }
     if [[ -e "$state_path" ]]; then
         runfile_installation_is_ready || { printf '%s\n' 'Runfile registration is stale or incomplete.' >&2; return 1; }
-    elif runfile_layout_is_ready; then
+    elif runfile_layout_exists; then
         printf '%s\n' 'Runfile installation refused: an unregistered Runfile layout already exists.' >&2
         return 1
     fi
@@ -1733,10 +1742,11 @@ install_rocm_runfile() {
         if runfile_reports_all_architectures "$runfile_path"; then
             run_cmd rm -rf "$temp_dir"
             return $?
+        else
+            status=$?
+            run_cmd rm -rf "$temp_dir" || return $?
+            return "$status"
         fi
-        status=$?
-        run_cmd rm -rf "$temp_dir" || return $?
-        return "$status"
     fi
     run_cmd bash "$runfile_path" --target "$install_root" deps=install rocm gfx=all compo=core,core-dev target=/opt || {
         status=$?

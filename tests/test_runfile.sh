@@ -110,7 +110,7 @@ INSTALL_PLAN=([method]=runfile [artifacts]="$ROCM_RUNFILE_URL" [runfile_gfx]=all
 reset_test_state
 assert_fails "marker-write failure rolls back the external Runfile install" install_rocm_runfile
 assert_contains "$RECORDED_COMMANDS" "uninstall-rocm gfx=all" "marker failure invokes the pinned official rollback"
-assert_fails "marker failure leaves no unregistered Runfile layout" runfile_layout_is_ready
+assert_fails "marker failure leaves no partial Runfile layout" runfile_layout_exists
 ROCM_RUNFILE_STATE_ROOT="${TEST_TEMP_ROOT}/runfile-state"
 rm -rf "$ROCM_RUNFILE_STATE_ROOT"
 

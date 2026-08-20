@@ -244,7 +244,8 @@ mixed_class_output="${TEST_TEMP_ROOT}/mixed-class-output"
 if resolve_install_plan 2> "$mixed_class_output"; then
     fail "mixed Ryzen and Radeon classes fail closed"
 fi
-assert_contains "$(<"$mixed_class_output")" "--method runfile --gpu-arch all" "mixed-class failure prints the explicit Runfile fallback"
+assert_contains "$(<"$mixed_class_output")" "$ROCM_RUNFILE_NAME" "mixed-class failure prints the standalone official Runfile command"
+assert_contains "$(<"$mixed_class_output")" "gfx=all" "mixed-class fallback installs all architectures"
 
 GPU_DEVICE_COUNT=0
 GPU_UNMAPPED_PCI=''
