@@ -94,6 +94,14 @@ GPU_ARCHES=''
 assert_fails "one unbound unmapped PCI device fails closed" resolve_gpu_identity
 ln -s "$r9700_driver_root" "${r9700_pci_root}/0000:04:00.0/driver"
 
+INSTALL_METHOD=runfile
+GPU_ARCHES=all
+assert_success "explicit Runfile all uses the detected KFD inventory" resolve_gpu_identity
+assert_eq gfx1201 "$GPU_ARCHES" "Runfile all retains detected gfx1201 for policy and verification"
+assert_eq all "$GPU_RUNFILE_GFX" "Runfile all records the all-architecture payload"
+assert_eq 4 "$GPU_DEVICE_COUNT" "Runfile all preserves four physical R9700 devices"
+INSTALL_METHOD=apt
+
 GPU_DETECTION_PCI_ROOT=$rx9060_pci_root
 GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
 GPU_ARCHES=''

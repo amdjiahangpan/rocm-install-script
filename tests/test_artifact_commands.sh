@@ -67,7 +67,7 @@ assert_command_output_eq "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "tarball plans one f
 assert_command_output_eq "amdrocm-core-sdk7.14-gfx1151" "single-GFX APT composition stays exact" resolve_plan_artifacts apt gfx1151
 assert_command_output_eq "rocm[libraries,device-gfx1151]==7.14.0" "single-GFX pip composition stays exact" resolve_plan_artifacts pip gfx1151
 assert_command_output_eq "therock-dist-linux-gfx1151-7.14.0.tar.gz" "single-GFX tarball composition stays exact" resolve_plan_artifacts tarball gfx1151
-assert_fails "plan artifact composition rejects an unknown method" resolve_plan_artifacts runfile "$multi_gfxes"
+assert_command_output_eq "$ROCM_RUNFILE_URL" "Runfile plans the pinned official installer" resolve_plan_artifacts runfile "$multi_gfxes"
 assert_fails "APT plan composition rejects a nonnormalized GFX collection" resolve_plan_artifacts apt $'gfx1201\ngfx1151'
 
 assert_eq $'gfxes\ngpu_count\ngpu_classes\ngpu_source\nlookup_url\nfallback_recommended\nos_key\nos_description\nrepo_slug\nmethod\nartifacts\ndriver_mode\ndriver_status\nactions\nkernel_status\nkernel_target\nkernel_package' "$(install_plan_keys)" "install plan includes GPU inventory, lookup guidance, driver state, actions, and kernel fields"
@@ -223,6 +223,15 @@ assert_eq 4 "${INSTALL_PLAN[gpu_count]}" "four-R9700 plan preserves physical GPU
 assert_eq kfd+unmapped-pci "${INSTALL_PLAN[gpu_source]}" "four-R9700 plan records unmapped PCI evidence"
 assert_contains "${INSTALL_PLAN[unmapped_pci]}" "1002:7004" "four-R9700 plan retains every unmapped PCI record"
 assert_eq false "${INSTALL_PLAN[fallback_recommended]}" "four identical R9700 cards need one gfx1201 artifact"
+
+INSTALL_METHOD=runfile
+GPU_RUNFILE_GFX=all
+assert_success "four-R9700 identity resolves an explicit Runfile all plan" resolve_install_plan
+assert_eq runfile "${INSTALL_PLAN[method]}" "Runfile plan records its method"
+assert_eq all "${INSTALL_PLAN[runfile_gfx]}" "Runfile plan records gfx=all"
+assert_eq "$ROCM_RUNFILE_URL" "${INSTALL_PLAN[artifacts]}" "Runfile plan pins the official artifact"
+INSTALL_METHOD=apt
+GPU_RUNFILE_GFX=''
 
 GPU_ARCHES=$'gfx1151\ngfx1201'
 GPU_CLASSES=''

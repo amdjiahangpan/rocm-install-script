@@ -101,6 +101,7 @@ reset_defaults() {
     GPU_DETECTION_SOURCE=''
     GPU_DEVICE_COUNT=0
     GPU_UNMAPPED_PCI=''
+    GPU_RUNFILE_GFX=''
     GPU_MODEL_NAME=''
     OS_DESCRIPTION=''
     unset GPU_ARCH GPU_PRODUCT_NAME
@@ -682,7 +683,13 @@ resolve_gpu_identity() {
     local pci_root=${GPU_DETECTION_PCI_ROOT:-/sys/bus/pci/devices}
     local kfd_gfxes='' requested_gfxes='' pci_records='' pci_gfxes='' pci_classes='' unmapped_pci='' detected_product_names='' record gfx gpu_class
     local kfd_count=0 pci_count=0 kfd_status=1 pci_status=1
-    local expected_classes
+    local expected_classes runfile_all=false
+
+    if [[ "$requested_arches" == all ]]; then
+        [[ "${INSTALL_METHOD:-}" == runfile ]] || return 64
+        requested_arches=''
+        runfile_all=true
+    fi
 
     GPU_ARCHES=''
     GPU_CLASSES=''
@@ -690,6 +697,7 @@ resolve_gpu_identity() {
     GPU_DETECTION_SOURCE=''
     GPU_DEVICE_COUNT=0
     GPU_UNMAPPED_PCI=''
+    GPU_RUNFILE_GFX=''
     GPU_MODEL_NAME=''
     [[ $# -eq 0 ]] || return 64
     if [[ -n "$requested_arches" ]]; then
@@ -758,6 +766,10 @@ resolve_gpu_identity() {
         else
             prompt_manual_gpu_identity "$pci_root" || return 1
         fi
+    if [[ "$runfile_all" == true ]]; then
+        [[ "$GPU_DETECTION_SOURCE" == kfd* ]] || { GPU_ARCHES=''; return 64; }
+        GPU_RUNFILE_GFX=all
+    fi
     fi
     expected_classes=$(resolve_gpu_classes "$GPU_ARCHES") || return 1
     if [[ -n "$GPU_CLASSES" ]]; then
@@ -794,6 +806,7 @@ resolve_plan_artifacts() {
             ;;
         pip) resolve_pip_requirement "$normalized_gfxes" ;;
         tarball) resolve_tarball_artifact "$normalized_gfxes" ;;
+        runfile) printf '%s\n' "$ROCM_RUNFILE_URL" ;;
         *) return 1 ;;
     esac
 }
@@ -802,10 +815,10 @@ validate_install_plan() {
     local key gfxes normalized_gfxes gpu_count gpu_classes expected_classes os_key os_description expected_os_description os_record repo_slug
     local expected_artifacts expected_driver expected_driver_status expected_actions expected_fallback normalized_product_names normalized_unmapped kernel_policy kernel_target kernel_package kernel_status
 
-    [[ ${#INSTALL_PLAN[@]} -ge 17 && ${#INSTALL_PLAN[@]} -le 19 ]] || return 1
+    [[ ${#INSTALL_PLAN[@]} -ge 17 && ${#INSTALL_PLAN[@]} -le 20 ]] || return 1
     for key in "${!INSTALL_PLAN[@]}"; do
         case "$key" in
-            gfxes|gpu_count|gpu_classes|gpu_source|lookup_url|fallback_recommended|os_key|os_description|repo_slug|method|artifacts|driver_mode|driver_status|actions|kernel_status|kernel_target|kernel_package|product_names|unmapped_pci) ;;
+            gfxes|gpu_count|gpu_classes|gpu_source|lookup_url|fallback_recommended|os_key|os_description|repo_slug|method|artifacts|runfile_gfx|driver_mode|driver_status|actions|kernel_status|kernel_target|kernel_package|product_names|unmapped_pci) ;;
             *) return 1 ;;
         esac
     done
@@ -833,6 +846,11 @@ validate_install_plan() {
     [[ "${INSTALL_PLAN[repo_slug]}" == "$repo_slug" ]] || return 1
     expected_artifacts=$(resolve_plan_artifacts "${INSTALL_PLAN[method]}" "$gfxes") || return 1
     [[ "${INSTALL_PLAN[artifacts]}" == "$expected_artifacts" ]] || return 1
+    if [[ "${INSTALL_PLAN[method]}" == runfile ]]; then
+        [[ "${INSTALL_PLAN[runfile_gfx]:-}" == all && "${INSTALL_PLAN[artifacts]}" == "$ROCM_RUNFILE_URL" ]] || return 1
+    else
+        [[ ! -v 'INSTALL_PLAN[runfile_gfx]' ]] || return 1
+    fi
     expected_driver=$(resolve_driver_mode "${DRIVER_MODE:-}" "$os_key" "$gpu_classes" "$gfxes") || return 1
     [[ "${INSTALL_PLAN[driver_mode]}" == "$expected_driver" ]] || return 1
     kernel_policy=$(kernel_policy_for "${INSTALL_PLAN[driver_mode]}" "$os_key" "$gfxes") || return 1
@@ -866,7 +884,7 @@ resolve_install_plan() {
     [[ "${SKIP_SSH:-}" == true || "${SKIP_SSH:-}" == false ]] || return 1
     [[ "${DKMS_CLEANUP_POLICY:-}" == auto || "${DKMS_CLEANUP_POLICY:-}" == ask || "${DKMS_CLEANUP_POLICY:-}" == always || "${DKMS_CLEANUP_POLICY:-}" == never ]] || return 1
     [[ "${ROOT_PASSWORD:-}" != *$'\n'* && "${ROOT_PASSWORD:-}" != *$'\r'* ]] || return 1
-    case "${INSTALL_METHOD:-}" in apt|pip|tarball) ;; *) return 1 ;; esac
+    case "${INSTALL_METHOD:-}" in apt|pip|tarball|runfile) ;; *) return 1 ;; esac
     os_key=$(normalize_os_key "$OS_ID" "${OS_VERSION:-}") || return 1
     os_description=${OS_DESCRIPTION:-"${OS_ID} ${OS_VERSION:-unknown}"}
     [[ -n "$os_description" && "$os_description" != *$'\n'* && "$os_description" != *$'\r'* ]] || return 1
@@ -915,6 +933,7 @@ resolve_install_plan() {
         [kernel_target]="$kernel_target"
         [kernel_package]="$kernel_package"
     )
+    [[ "$INSTALL_METHOD" != runfile ]] || INSTALL_PLAN[runfile_gfx]="${GPU_RUNFILE_GFX:-}"
     [[ -z "${GPU_UNMAPPED_PCI:-}" ]] || INSTALL_PLAN[unmapped_pci]=$GPU_UNMAPPED_PCI
     [[ -z "$normalized_product_names" ]] || INSTALL_PLAN[product_names]=$normalized_product_names
     if validate_install_plan; then return 0; fi
@@ -1434,9 +1453,14 @@ configure_rocm_apt_repository() {
 }
 
 install_rocm_apt() {
-    local artifacts=${INSTALL_PLAN[artifacts]:-} package_name legacy_layout_target
+    local artifacts=${INSTALL_PLAN[artifacts]:-} package_name legacy_layout_target runfile_state
     local -a package_names=()
 
+    runfile_state=$(runfile_state_path) || return 1
+    if [[ -e "$runfile_state" ]]; then
+        printf 'APT installation refused: a ROCm Runfile installation is registered. Use --method runfile --uninstall first.\n' >&2
+        return 1
+    fi
     [[ -n "$artifacts" ]] || return 1
     while IFS= read -r package_name || [[ -n "$package_name" ]]; do
         [[ "$package_name" != *$'\r'* && "$package_name" =~ [^[:space:]] ]] || return 1
@@ -1540,11 +1564,76 @@ install_rocm_tarball() {
     run_cmd rm -rf "$temp_dir"
 }
 
+runfile_state_path() {
+    local state_root=${ROCM_RUNFILE_STATE_ROOT:-/var/lib/rocm-installer}
+
+    [[ "$state_root" == /* ]] || return 1
+    printf '%s/runfile-7.14-all\n' "${state_root%/}"
+}
+
+runfile_layout_is_ready() {
+    local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-7.14}
+
+    [[ -x "$install_root/bin/rocminfo" && -x "$install_root/bin/amd-smi" ]]
+}
+
+runfile_installation_is_ready() {
+    local state_path
+
+    state_path=$(runfile_state_path) || return 1
+    [[ -f "$state_path" ]] && runfile_layout_is_ready
+}
+
+mark_runfile_installation() {
+    local state_root=${ROCM_RUNFILE_STATE_ROOT:-/var/lib/rocm-installer} state_path
+
+    state_path=$(runfile_state_path) || return 1
+    install -d -m 0700 "$state_root" || return $?
+    printf 'version=%s\ngfx=all\nurl=%s\n' "$ROCM_VERSION" "$ROCM_RUNFILE_URL" > "$state_path" || return $?
+    chmod 0600 "$state_path"
+}
+
+install_rocm_runfile() {
+    local apt_packages temp_dir runfile_path status
+
+    [[ "${INSTALL_PLAN[artifacts]:-}" == "$ROCM_RUNFILE_URL" && "${INSTALL_PLAN[runfile_gfx]:-}" == all ]] || return 1
+    apt_packages=$(rocm_apt_installed_package_candidates) || return $?
+    if [[ -n "$apt_packages" ]]; then
+        printf 'Runfile installation refused: package-manager ROCm packages are installed: %s\n' "${apt_packages//$'\n'/,}" >&2
+        return 1
+    fi
+    runfile_installation_is_ready && return 0
+    temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/rocm-runfile.XXXXXX") || return $?
+    runfile_path="${temp_dir}/${ROCM_RUNFILE_NAME}"
+    run_cmd curl -fL --retry 0 --output "$runfile_path" "$ROCM_RUNFILE_URL" || {
+        status=$?
+        run_cmd rm -rf "$temp_dir" || return $?
+        return "$status"
+    }
+    run_cmd bash "$runfile_path" deps=install rocm gfx=all compo=core,core-dev || {
+        status=$?
+        run_cmd rm -rf "$temp_dir" || return $?
+        return "$status"
+    }
+    runfile_layout_is_ready || {
+        status=$?
+        run_cmd rm -rf "$temp_dir" || return $?
+        return "$status"
+    }
+    mark_runfile_installation || {
+        status=$?
+        run_cmd rm -rf "$temp_dir" || return $?
+        return "$status"
+    }
+    run_cmd rm -rf "$temp_dir"
+}
+
 install_rocm() {
     case "${INSTALL_PLAN[method]:-${INSTALL_METHOD:-}}" in
         apt) install_rocm_apt ;;
         pip) install_rocm_pip ;;
         tarball) install_rocm_tarball ;;
+        runfile) install_rocm_runfile ;;
         *) return 1 ;;
     esac
 }
@@ -1732,7 +1821,7 @@ resolve_install_actions() {
     [[ $# -eq 3 ]] || return 1
     case "$kernel_status" in ready|install-required|reboot-required) ;; *) return 1 ;; esac
     case "$driver_status" in ready|install-required|migration-required|reboot-required|runtime-failed) ;; *) return 1 ;; esac
-    case "$method" in apt|pip|tarball) ;; *) return 1 ;; esac
+    case "$method" in apt|pip|tarball|runfile) ;; *) return 1 ;; esac
     if [[ "$kernel_status" != ready ]]; then
         printf 'kernel:%s\n' "$kernel_status"
         return 0
@@ -1859,7 +1948,7 @@ step_prerequisites() {
     case "${INSTALL_PLAN[method]:-${INSTALL_METHOD:-}}" in
         pip) required_packages+=(python3 python3-venv python3-pip) ;;
         tarball) required_packages+=(tar gzip) ;;
-        apt) ;;
+        apt|runfile) ;;
         *) return 1 ;;
     esac
     run_cmd apt-get update || return $?
@@ -1901,7 +1990,7 @@ user_has_required_groups() {
 
 rocm_install_root() {
     case "${INSTALL_PLAN[method]:-${INSTALL_METHOD:-}}" in
-        apt) printf '%s\n' /opt/rocm/core-7.14 ;;
+        apt|runfile) printf '%s\n' /opt/rocm/core-7.14 ;;
         pip) printf '/opt/rocm-%s-venv\n' "$ROCM_VERSION" ;;
         tarball) printf '%s\n' /opt/rocm ;;
         *) return 1 ;;
