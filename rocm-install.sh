@@ -22,6 +22,7 @@ ROCM_RUNFILE_URL="https://repo.radeon.com/rocm/installer/rocm-runfile-installer/
 AMDGPU_REPOSITORY=https://repo.radeon.com/amdgpu/${AMDGPU_RELEASE}/ubuntu
 AMDGPU_GPG_KEY_URL=https://repo.radeon.com/rocm/rocm.gpg.key
 SUPPORTED_OS_KEYS=ubuntu-24.04.4,ubuntu-26.04
+R9700_PCI_ID=1002:7551
 KERNEL_MIN_FREE_KIB=524288
 EXIT_KERNEL_ACTION_REQUIRED=20
 EXIT_KERNEL_REBOOT_REQUIRED=21
@@ -88,6 +89,7 @@ reset_defaults() {
     REBOOT_DELAY=0
     PREPARE_KERNEL=false
     REBOOT_AFTER_KERNEL=false
+    ALLOW_UNQUALIFIED_KERNEL=false
     VERIFY_ONLY=false
     UNINSTALL=false
     NON_INTERACTIVE=false
@@ -801,7 +803,7 @@ resolve_gpu_identity() {
 }
 
 install_plan_keys() {
-    printf '%s\n' gfxes gpu_count gpu_classes gpu_source lookup_url fallback_recommended os_key os_description repo_slug method artifacts driver_mode driver_status actions kernel_status kernel_target kernel_package
+    printf '%s\n' gfxes gpu_count gpu_classes gpu_source lookup_url fallback_recommended os_key os_description repo_slug method artifacts driver_mode driver_status actions kernel_status support_status kernel_target kernel_package
 }
 
 reset_install_plan() {
@@ -829,12 +831,12 @@ resolve_plan_artifacts() {
 
 validate_install_plan() {
     local key gfxes normalized_gfxes gpu_count gpu_classes expected_classes os_key os_description expected_os_description os_record repo_slug
-    local expected_artifacts expected_driver expected_driver_status expected_actions expected_fallback normalized_product_names normalized_unmapped kernel_policy kernel_target kernel_package kernel_status
+    local expected_artifacts expected_driver expected_driver_status expected_actions expected_fallback normalized_product_names normalized_unmapped kernel_policy kernel_target kernel_package kernel_status support_record support_status
 
-    [[ ${#INSTALL_PLAN[@]} -ge 17 && ${#INSTALL_PLAN[@]} -le 20 ]] || return 1
+    [[ ${#INSTALL_PLAN[@]} -ge 18 && ${#INSTALL_PLAN[@]} -le 21 ]] || return 1
     for key in "${!INSTALL_PLAN[@]}"; do
         case "$key" in
-            gfxes|gpu_count|gpu_classes|gpu_source|lookup_url|fallback_recommended|os_key|os_description|repo_slug|method|artifacts|runfile_gfx|driver_mode|driver_status|actions|kernel_status|kernel_target|kernel_package|product_names|unmapped_pci) ;;
+            gfxes|gpu_count|gpu_classes|gpu_source|lookup_url|fallback_recommended|os_key|os_description|repo_slug|method|artifacts|runfile_gfx|driver_mode|driver_status|actions|kernel_status|support_status|kernel_target|kernel_package|product_names|unmapped_pci) ;;
             *) return 1 ;;
         esac
     done
@@ -873,8 +875,10 @@ validate_install_plan() {
     IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
     [[ "${INSTALL_PLAN[kernel_target]}" == "$kernel_target" ]] || return 1
     [[ "${INSTALL_PLAN[kernel_package]}" == "$kernel_package" ]] || return 1
-    kernel_status=$(resolve_kernel_status "$kernel_target" "$kernel_package" "${KERNEL_VERSION:-}") || return $?
+    support_record=$(resolve_kernel_support_record "${INSTALL_PLAN[driver_mode]}" "$os_key" "$gpu_classes" "$gfxes" "$gpu_count" "${INSTALL_PLAN[unmapped_pci]:-}" "${KERNEL_VERSION:-}" "$kernel_target" "$kernel_package") || return $?
+    IFS='|' read -r kernel_status support_status <<< "$support_record"
     [[ "${INSTALL_PLAN[kernel_status]}" == "$kernel_status" ]] || return 1
+    [[ "${INSTALL_PLAN[support_status]}" == "$support_status" ]] || return 1
     expected_driver_status=$(resolve_driver_status "${INSTALL_PLAN[driver_mode]}" "$gfxes") || return 1
     [[ "${INSTALL_PLAN[driver_status]}" == "$expected_driver_status" ]] || return 1
     expected_actions=$(resolve_install_actions "$kernel_status" "$expected_driver_status" "${INSTALL_PLAN[method]}") || return 1
@@ -891,7 +895,7 @@ validate_install_plan() {
 
 resolve_install_plan() {
     local os_key os_description os_record repo_slug artifacts driver_mode driver_status actions normalized_gfxes normalized_gpu_classes gpu_source fallback_recommended
-    local kernel_policy kernel_target kernel_package kernel_status
+    local kernel_policy kernel_target kernel_package kernel_status support_record support_status
     local normalized_product_names=''
 
     reset_install_plan
@@ -924,7 +928,8 @@ resolve_install_plan() {
     driver_mode=$(resolve_driver_mode "$DRIVER_MODE" "$os_key" "$normalized_gpu_classes" "$normalized_gfxes") || return 1
     kernel_policy=$(kernel_policy_for "$driver_mode" "$os_key" "$normalized_gfxes") || return 1
     IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
-    kernel_status=$(resolve_kernel_status "$kernel_target" "$kernel_package" "${KERNEL_VERSION:-}") || return $?
+    support_record=$(resolve_kernel_support_record "$driver_mode" "$os_key" "$normalized_gpu_classes" "$normalized_gfxes" "${GPU_DEVICE_COUNT:-0}" "${GPU_UNMAPPED_PCI:-}" "${KERNEL_VERSION:-}" "$kernel_target" "$kernel_package") || return $?
+    IFS='|' read -r kernel_status support_status <<< "$support_record"
     driver_status=$(resolve_driver_status "$driver_mode" "$normalized_gfxes") || return 1
     actions=$(resolve_install_actions "$kernel_status" "$driver_status" "$INSTALL_METHOD") || return 1
     os_record=$(resolve_os_record "$os_key") || return 1
@@ -946,6 +951,7 @@ resolve_install_plan() {
         [driver_status]="$driver_status"
         [actions]="$actions"
         [kernel_status]="$kernel_status"
+        [support_status]="$support_status"
         [kernel_target]="$kernel_target"
         [kernel_package]="$kernel_package"
     )
@@ -981,6 +987,10 @@ print_install_plan() {
     output+="driver_status=${INSTALL_PLAN[driver_status]}"$'\n'
     output+="action=${action_csv}"$'\n'
     output+="kernel_status=${INSTALL_PLAN[kernel_status]}"$'\n'
+    output+="support_status=${INSTALL_PLAN[support_status]}"$'\n'
+    if [[ "${INSTALL_PLAN[support_status]}" == unqualified ]]; then
+        output+="warning=UNQUALIFIED: ROCm 7.14.0 lists Ubuntu 24.04 R9700 with kernel 6.8, not this 6.17 kernel"$'\n'
+    fi
     output+="kernel_target=${INSTALL_PLAN[kernel_target]}"$'\n'
     output+="kernel_package=${INSTALL_PLAN[kernel_package]}"$'\n'
     if [[ -v 'INSTALL_PLAN[unmapped_pci]' ]]; then
@@ -1137,6 +1147,45 @@ resolve_kernel_status() {
     else
         printf '%s\n' install-required
     fi
+}
+
+r9700_identity_is_verified() {
+    local gfxes=${1:-} gpu_count=${2:-} unmapped_pci=${3:-}
+    local record bdf pci_id revision extra pci_count=0
+
+    [[ $# -eq 3 && "$gfxes" == gfx1201 && "$gpu_count" =~ ^[1-9][0-9]*$ && -n "$unmapped_pci" ]] || return 1
+    while IFS= read -r record || [[ -n "$record" ]]; do
+        IFS='|' read -r bdf pci_id revision extra <<< "$record"
+        [[ "$bdf" =~ ^[[:xdigit:]]{4}:[[:xdigit:]]{2}:[[:xdigit:]]{2}\.[0-7]$ \
+            && "$pci_id" == "$R9700_PCI_ID" \
+            && "$revision" =~ ^[[:xdigit:]]{4}$ \
+            && -z "$extra" ]] || return 1
+        pci_count=$((pci_count + 1))
+    done <<< "$unmapped_pci"
+    ((pci_count == gpu_count))
+}
+
+resolve_kernel_support_record() {
+    local driver_mode=${1:-} os_key=${2:-} gpu_classes=${3:-} gfxes=${4:-} gpu_count=${5:-}
+    local unmapped_pci=${6:-} kernel_release=${7:-} kernel_target=${8:-} kernel_package=${9:-} kernel_status
+
+    [[ $# -eq 9 ]] || return 1
+    [[ "$(resolve_gpu_classes "$gfxes")" == "$gpu_classes" ]] || return 1
+    kernel_status=$(resolve_kernel_status "$kernel_target" "$kernel_package" "$kernel_release") || return $?
+    if [[ "$kernel_status" == ready ]]; then
+        printf '%s\n' 'ready|qualified'
+        return 0
+    fi
+    if [[ "${ALLOW_UNQUALIFIED_KERNEL:-false}" == true \
+        && "$os_key" == ubuntu-24.04.4 \
+        && "$gpu_classes" == radeon \
+        && "$driver_mode" == dkms \
+        && "$kernel_release" =~ ^6\.17\.[0-9]+(-[[:alnum:].+_]+)*-generic$ ]] \
+        && r9700_identity_is_verified "$gfxes" "$gpu_count" "$unmapped_pci"; then
+        printf '%s\n' 'ready-unqualified|unqualified'
+        return 0
+    fi
+    printf '%s|%s\n' "$kernel_status" qualified
 }
 
 kernel_boot_has_minimum_free_space() {
@@ -1972,10 +2021,10 @@ resolve_install_actions() {
     local kernel_status=${1:-} driver_status=${2:-} method=${3:-}
 
     [[ $# -eq 3 ]] || return 1
-    case "$kernel_status" in ready|install-required|reboot-required) ;; *) return 1 ;; esac
+    case "$kernel_status" in ready|ready-unqualified|install-required|reboot-required) ;; *) return 1 ;; esac
     case "$driver_status" in ready|install-required|migration-required|reboot-required|runtime-failed) ;; *) return 1 ;; esac
     case "$method" in apt|pip|tarball|runfile) ;; *) return 1 ;; esac
-    if [[ "$kernel_status" != ready ]]; then
+    if [[ "$kernel_status" != ready && "$kernel_status" != ready-unqualified ]]; then
         printf 'kernel:%s\n' "$kernel_status"
         return 0
     fi
@@ -2436,6 +2485,7 @@ Options:
   --reboot-delay MIN       Delay reboot for 0 to 120 minutes
   --prepare-kernel         Install the reviewed kernel when it is not running
   --reboot-after-kernel    Select the reviewed kernel for one reboot attempt
+  --allow-unqualified-kernel  Allow Ubuntu 24.04 R9700 DKMS on 6.17 generic; unsupported
   --verify-only            Verify an existing installation
   --uninstall              Remove an existing installation
   --non-interactive        Run without prompts
@@ -2502,6 +2552,10 @@ parse_args() {
                 REBOOT_AFTER_KERNEL=true
                 shift
                 ;;
+            --allow-unqualified-kernel)
+                ALLOW_UNQUALIFIED_KERNEL=true
+                shift
+                ;;
             --verify-only)
                 VERIFY_ONLY=true
                 shift
@@ -2529,6 +2583,8 @@ parse_args() {
     [[ "$VERIFY_ONLY" != true || "$UNINSTALL" != true ]] || return 1
     [[ "$REBOOT_AFTER_KERNEL" != true || "$PREPARE_KERNEL" == true ]] || return 1
     [[ "$PREPARE_KERNEL" != true || ( "$VERIFY_ONLY" != true && "$UNINSTALL" != true ) ]] || return 1
+    [[ "$ALLOW_UNQUALIFIED_KERNEL" != true || ( "$PREPARE_KERNEL" != true && "$REBOOT_AFTER_KERNEL" != true ) ]] || return 1
+    [[ "$ALLOW_UNQUALIFIED_KERNEL" != true || ( "$VERIFY_ONLY" != true && "$UNINSTALL" != true ) ]] || return 1
     if [[ "$GPU_ARCHES" == all || "$GPU_ARCHES" == *$'\n'all || "$GPU_ARCHES" == all$'\n'* || "$GPU_ARCHES" == *$'\n'all$'\n'* ]]; then
         [[ "$GPU_ARCHES" == all && "$INSTALL_METHOD" == runfile ]] || return 1
     fi
@@ -2636,7 +2692,7 @@ main() {
         return "$status"
     }
     run_stage 'installation plan revalidation' validate_install_plan || return $?
-    if [[ "${INSTALL_PLAN[kernel_status]}" != ready ]]; then
+    if [[ "${INSTALL_PLAN[kernel_status]}" != ready && "${INSTALL_PLAN[kernel_status]}" != ready-unqualified ]]; then
         if [[ "$PREPARE_KERNEL" != true ]]; then
             report_kernel_action_required
             return "$EXIT_KERNEL_ACTION_REQUIRED"
