@@ -50,22 +50,35 @@ assert_status 21 "unchanged boot ID reports a pending reboot" reconcile_pending_
 assert_not_contains "$RECORDED_COMMANDS" reboot "pending state does not reboot implicitly"
 
 MOCK_NEXT_ENTRY=''
+MOCK_PREV_SAVED_ENTRY=''
 MOCK_GRUB_VERIFY=true
+MOCK_GRUB_ARMED=false
 run_cmd() {
     recording_run_cmd "$@"
     if [[ "$1" == grub-reboot ]]; then
         MOCK_NEXT_ENTRY=$2
-    elif [[ "$1" == grub-editenv && "${3:-}" == unset && "${4:-}" == next_entry ]]; then
-        MOCK_NEXT_ENTRY=''
+        MOCK_GRUB_ARMED=true
+    elif [[ "$1" == grub-editenv && "${3:-}" == unset ]]; then
+        case "${4:-}" in
+            next_entry) MOCK_NEXT_ENTRY='' ;;
+            prev_saved_entry) MOCK_PREV_SAVED_ENTRY='' ;;
+        esac
+        MOCK_GRUB_ARMED=false
+    elif [[ "$1" == grub-editenv && "${3:-}" == set ]]; then
+        case "${4:-}" in
+            next_entry=*) MOCK_NEXT_ENTRY=${4#next_entry=} ;;
+            prev_saved_entry=*) MOCK_PREV_SAVED_ENTRY=${4#prev_saved_entry=} ;;
+        esac
     fi
 }
 capture_cmd() {
     if [[ "$*" == "grub-editenv ${GRUB_ENV_FILE} list" ]]; then
-        if [[ "$MOCK_GRUB_VERIFY" == true ]]; then
-            printf 'next_entry=%s\n' "$MOCK_NEXT_ENTRY"
-        else
+        if [[ "$MOCK_GRUB_VERIFY" != true && "$MOCK_GRUB_ARMED" == true ]]; then
             printf 'next_entry=%s\n' 'wrong-entry'
+        elif [[ -n "$MOCK_NEXT_ENTRY" ]]; then
+            printf 'next_entry=%s\n' "$MOCK_NEXT_ENTRY"
         fi
+        [[ -z "$MOCK_PREV_SAVED_ENTRY" ]] || printf 'prev_saved_entry=%s\n' "$MOCK_PREV_SAVED_ENTRY"
         return 0
     fi
     return 1
@@ -85,13 +98,21 @@ assert_fails "state-write failure prevents GRUB one-shot selection" prepare_kern
 assert_not_contains "$RECORDED_COMMANDS" "grub-reboot" "GRUB remains untouched when pending state cannot be written"
 INSTALLER_STATE_ROOT=$original_state_root
 
+MOCK_NEXT_ENTRY='maintenance-entry'
+MOCK_PREV_SAVED_ENTRY='saved-default'
 MOCK_GRUB_VERIFY=false
+MOCK_GRUB_ARMED=false
 reset_test_state
-assert_fails "failed GRUB verification rolls back one-shot state" prepare_kernel_reboot
-assert_contains "$RECORDED_COMMANDS" "unset next_entry" "failed GRUB verification clears the armed next entry"
+assert_fails "failed GRUB verification restores existing one-shot state" prepare_kernel_reboot
+assert_eq maintenance-entry "$MOCK_NEXT_ENTRY" "failed setup restores the previous next entry"
+assert_eq saved-default "$MOCK_PREV_SAVED_ENTRY" "failed setup restores the previous saved entry"
+assert_contains "$RECORDED_COMMANDS" "set next_entry=maintenance-entry" "rollback rewrites the previous next entry"
+assert_contains "$RECORDED_COMMANDS" "set prev_saved_entry=saved-default" "rollback rewrites the previous saved entry"
 assert_fails "failed GRUB verification removes pending state" test -e "${INSTALLER_STATE_ROOT}/pending-kernel"
 MOCK_GRUB_VERIFY=true
+MOCK_GRUB_ARMED=false
 MOCK_NEXT_ENTRY=''
+MOCK_PREV_SAVED_ENTRY=''
 reset_test_state
 assert_status 21 "explicit one-shot setup records a reboot-pending state" prepare_kernel_reboot
 assert_contains "$RECORDED_COMMANDS" "grub-reboot" "one-shot setup invokes GRUB one-shot selection"

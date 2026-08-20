@@ -1108,11 +1108,59 @@ configure_grub_next_entry() {
     [[ $next_entry_count -eq 1 && "$next_entry" == "$entry" ]]
 }
 
-clear_grub_next_entry() {
-    local grub_env=${GRUB_ENV_FILE:-/boot/grub/grubenv}
+snapshot_grub_one_shot_state() {
+    local grub_env=${GRUB_ENV_FILE:-/boot/grub/grubenv} grub_output line
+
+    GRUB_PREVIOUS_NEXT_ENTRY_PRESENT=false
+    GRUB_PREVIOUS_NEXT_ENTRY=''
+    GRUB_PREVIOUS_SAVED_ENTRY_PRESENT=false
+    GRUB_PREVIOUS_SAVED_ENTRY=''
+    grub_output=$(capture_cmd grub-editenv "$grub_env" list) || return $?
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            next_entry=*)
+                [[ "$GRUB_PREVIOUS_NEXT_ENTRY_PRESENT" == false ]] || return 1
+                GRUB_PREVIOUS_NEXT_ENTRY_PRESENT=true
+                GRUB_PREVIOUS_NEXT_ENTRY=${line#next_entry=}
+                ;;
+            prev_saved_entry=*)
+                [[ "$GRUB_PREVIOUS_SAVED_ENTRY_PRESENT" == false ]] || return 1
+                GRUB_PREVIOUS_SAVED_ENTRY_PRESENT=true
+                GRUB_PREVIOUS_SAVED_ENTRY=${line#prev_saved_entry=}
+                ;;
+        esac
+    done <<< "$grub_output"
+}
+
+restore_grub_one_shot_state() {
+    local grub_env=${GRUB_ENV_FILE:-/boot/grub/grubenv} grub_output line
+    local current_next_present=false current_next='' current_saved_present=false current_saved=''
 
     run_cmd grub-editenv "$grub_env" unset next_entry || return $?
     run_cmd grub-editenv "$grub_env" unset prev_saved_entry || return $?
+    if [[ "$GRUB_PREVIOUS_NEXT_ENTRY_PRESENT" == true ]]; then
+        run_cmd grub-editenv "$grub_env" set "next_entry=${GRUB_PREVIOUS_NEXT_ENTRY}" || return $?
+    fi
+    if [[ "$GRUB_PREVIOUS_SAVED_ENTRY_PRESENT" == true ]]; then
+        run_cmd grub-editenv "$grub_env" set "prev_saved_entry=${GRUB_PREVIOUS_SAVED_ENTRY}" || return $?
+    fi
+    grub_output=$(capture_cmd grub-editenv "$grub_env" list) || return $?
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            next_entry=*)
+                [[ "$current_next_present" == false ]] || return 1
+                current_next_present=true
+                current_next=${line#next_entry=}
+                ;;
+            prev_saved_entry=*)
+                [[ "$current_saved_present" == false ]] || return 1
+                current_saved_present=true
+                current_saved=${line#prev_saved_entry=}
+                ;;
+        esac
+    done <<< "$grub_output"
+    [[ "$current_next_present" == "$GRUB_PREVIOUS_NEXT_ENTRY_PRESENT" && "$current_next" == "$GRUB_PREVIOUS_NEXT_ENTRY" ]] || return 1
+    [[ "$current_saved_present" == "$GRUB_PREVIOUS_SAVED_ENTRY_PRESENT" && "$current_saved" == "$GRUB_PREVIOUS_SAVED_ENTRY" ]]
 }
 
 confirm_kernel_reboot() {
@@ -1131,10 +1179,11 @@ prepare_kernel_reboot() {
     printf 'ROCm will select one boot attempt: current kernel=%s, target kernel=%s, boot entry=%s.\n' \
         "${KERNEL_VERSION:-unknown}" "${INSTALL_PLAN[kernel_target]:-unknown}" "$entry" >&2
     confirm_kernel_reboot || return 1
+    snapshot_grub_one_shot_state || return 1
     boot_id=$(read_boot_id) || return 1
     write_pending_kernel_state "${INSTALL_PLAN[kernel_target]}" "$entry" "$boot_id" 1 || return 1
     if ! configure_grub_next_entry "$entry"; then
-        if clear_grub_next_entry; then
+        if restore_grub_one_shot_state; then
             clear_pending_kernel_state || return 1
         fi
         return 1

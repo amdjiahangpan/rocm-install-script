@@ -136,6 +136,10 @@ run, a successful switch clears the state. If the boot ID changed but the
 kernel still mismatches, the installer reports manual recovery and never
 reboots again.
 
+Before changing GRUB, the installer snapshots existing `next_entry` and
+`prev_saved_entry` values. A failed one-shot setup restores and verifies those
+values, so an unrelated user-selected boot entry is not lost.
+
 `auto` is context-sensitive; it is not an alias for inbox. Radeon and Instinct
 paths select AMDGPU 31.40 DKMS, while reviewed Ryzen paths select inbox.
 
@@ -154,6 +158,12 @@ The script checks the installed `amdgpu-dkms` and
   policy permits inbox.
 - Any residue after removal or inconsistent state after installation stops the
   lifecycle with a stage-specific error.
+
+`driver_status` is `ready`, `install-required`, `migration-required`,
+`reboot-required`, or `runtime-failed`. Any non-ready driver action blocks ROCm
+installation. Driver installation/removal stops for activation and returns a
+distinct nonzero status; `--skip-reboot` suppresses the command but never turns
+that deferred state into success. A broken inbox runtime fails without mutation.
 
 The cleanup policy applies whenever removal is required:
 
