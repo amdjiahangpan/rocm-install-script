@@ -439,11 +439,10 @@ MOCK_DKMS_STATUS=''
 heterogeneous_fixture="${ROOT_DIR}/tests/fixtures/gfx1151-gfx1201"
 GPU_DETECTION_KFD_ROOT="${heterogeneous_fixture}/kfd"
 GPU_DETECTION_DRM_ROOT="${TEST_TEMP_ROOT}/missing-drm-root"
-assert_success "explicit GPU architectures replace automatic heterogeneous detection" run_mocked_main apt --gpu-arch gfx1151
-assert_eq "gfx1151" "$GPU_ARCHES" "explicit architecture replaces automatically detected heterogeneous targets"
-assert_eq "gfx1151" "${INSTALL_PLAN[gfxes]}" "explicit architecture creates a single-GFX plan"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk7.14-gfx1151" "explicit architecture selects its SDK package"
-assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk7.14-gfx1201" "explicit architecture does not retain an automatic heterogeneous target"
+assert_status 64 "explicit GFX mismatch with active KFD fails closed" run_mocked_main apt --gpu-arch gfx1151
+assert_eq "" "$GPU_ARCHES" "explicit mismatch leaves no partial architecture plan"
+assert_eq "0" "${#INSTALL_PLAN[@]}" "explicit mismatch creates no install plan"
+assert_eq "" "$RECORDED_COMMANDS$MANAGED_FILES$PASSWORD_UPDATES" "explicit mismatch performs no mutation"
 unset GPU_DETECTION_KFD_ROOT GPU_DETECTION_DRM_ROOT
 
 MOCK_FAIL_FRAGMENT=""

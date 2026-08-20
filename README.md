@@ -77,30 +77,32 @@ gfx950 gfx942 gfx90a gfx908 gfx1201 gfx1200 gfx1100 gfx1101 gfx1102 gfx1030
 gfx1151 gfx1150 gfx1152 gfx1153 gfx1103
 ```
 
-### Fail-Closed GPU Selection
+### KFD-First GPU Selection
 
-Automatic detection uses two independent sources. KFD topology is primary: GPU
-nodes require `cpu_cores_count == 0` and a nonzero `gfx_target_version`. When the
-current driver cannot create KFD topology, the installer scans AMD display-class
-PCI sysfs records and resolves only IDs present in its reviewed PCI-to-GFX table.
-For example, RX 9060 XT PCI ID `1002:7590` resolves to Radeon `gfx1200`.
+KFD topology is the architecture authority when it reports only reviewed ROCm
+7.14 GFX targets. The installer preserves the physical KFD node count separately
+from the deduplicated architecture set, so four identical R9700 cards select one
+`gfx1201` artifact while the plan reports `gpu_count=4`.
 
-When KFD and PCI are both available, their complete normalized GFX sets and
-reviewed classes must agree. A disagreement, ambiguity, unsupported GFX, or
-unknown PCI ID fails before mutation. Unknown IDs are reported with an exact
-`--gpu-arch` recovery command template; marketing names are never used to guess
-an architecture.
+Known PCI IDs remain strict consistency checks. An unknown AMD display PCI ID is
+accepted only when KFD is valid, the number of AMD display devices matches the
+KFD GPU count, and every unknown device is bound to `amdgpu`. Such plans report
+`gpu_source=kfd+unmapped-pci` and list the unmapped IDs. This supports official
+Radeon and Ryzen models before every PCI revision is curated locally.
 
-`--gpu-arch` may be repeated. If present, its complete set replaces automatic
-detection. Values are validated, deduplicated, sorted, and mapped to a reviewed
-device class. Mixed device classes are rejected unless a host policy explicitly
-supports them. Unless a required reboot defers verification, every explicitly
-requested target must appear as a `rocminfo` agent.
+When KFD is unavailable, reviewed PCI mappings may recover GFX automatically.
+Otherwise an interactive run prints the official and Chinese lookup links and
+asks for an informational model name plus a validated GFX target. Non-interactive
+runs require `--gpu-arch`. Once KFD becomes available, it must match the manual
+or explicit GFX before architecture-specific ROCm installation proceeds.
 
-DRM product names remain informational. Direct sysfs values or exact
-`amdgpu.ids` device/revision lookups are displayed independently and never
-select a package, SKU, driver, kernel, or PCI-to-GFX mapping. `rocminfo` remains
-a post-install verification requirement.
+- Official selector: <https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile>
+- Chinese model/GFX table: <https://github.com/amdjiahangpan/hello-rocm/blob/master/docs/zh/00-environment/rocm-gpu-architecture-table.md>
+
+Model names remain informational and never select a package, kernel, or driver.
+Multiple different GFX targets produce an explicit recommendation for Runfile
+`gfx=all`. Same-class compatible targets may continue after confirmation; mixed
+Ryzen/Radeon/Instinct policy classes remain fail-closed.
 
 ## Kernel and Driver Requirements
 
@@ -238,14 +240,39 @@ is selected. The archive extracts into a temporary staging directory, promotes
 the result to `/opt/rocm-7.14.0`, then updates `/opt/rocm`. A failed extraction
 or activation leaves the previous installation in place when rollback succeeds.
 
-All three methods use the same GPU, OS, kernel-preparation, and driver policy.
+
+### Runfile `gfx=all`
+
+`--method runfile --gpu-arch all` is the explicit all-architecture fallback. It
+downloads the pinned official `rocm-installer-7.14.0-7.run` and executes:
+
+```text
+deps=install rocm gfx=all compo=core,core-dev target=/opt
+```
+
+The explicit `target=/opt` contract installs this release at
+`/opt/rocm/core-7.14.0`; Runfile verification and uninstall use that exact root.
+The Runfile performs its built-in checksum validation. AMDGPU driver management
+remains in this script's driver state machine; the Runfile path does not install
+a second driver. Before any driver or prerequisite mutation, the installer
+rejects APT, legacy package-manager, pip, tarball, unregistered Runfile, and
+stale Runfile layouts that would be mixed.
+
+A repeated Runfile run validates the atomic registration marker and queries
+`gfx=list-installed`; it skips installation only when every reviewed GFX target
+is present. If payload validation or marker creation fails after installation,
+the pinned official uninstaller rolls the partial Runfile layout back.
+
+The URL query `fam=all` only controls the documentation selector. The actual
+installation fallback is the Runfile argument `gfx=all`.
+All four methods use the same host, kernel, driver, and verification policy.
 
 ## Command-Line Options
 
 | Option | Meaning |
 | --- | --- |
-| `--method METHOD` | Installation method: `apt`, `pip`, or `tarball`. Default: `apt`. |
-| `--gpu-arch ARCH` | Replace automatic KFD/PCI detection with a supported architecture. May be repeated; duplicate values are removed. |
+| `--method METHOD` | Installation method: `apt`, `pip`, `tarball`, or `runfile`. Default: `apt`. |
+| `--gpu-arch ARCH` | Replace automatic detection with reviewed GFX values. `all` is accepted only with Runfile. |
 | `--driver-mode MODE` | `auto` (default), `inbox`, or `dkms`; explicit modes must match the reviewed host/GPU policy. |
 | `--skip-ssh` | Skip OpenSSH setup and any root password update. |
 | `--root-password PASS` | Set the root password during SSH setup. |
@@ -298,6 +325,25 @@ kernel_target=6.8.*-generic
 kernel_package=linux-generic
 ```
 
+Four Radeon AI PRO R9700 cards produce one architecture package selection while
+preserving the physical inventory:
+
+```text
+gfx=gfx1201
+gpu_count=4
+gpu_class=radeon
+gpu_source=kfd+unmapped-pci
+```
+
+If the detected/input architecture is uncertain or multiple different GFX
+targets are present, use the explicit official fallback:
+
+```bash
+sudo bash ./rocm-install.sh --method runfile --gpu-arch all --skip-ssh
+```
+
+The installer never changes an APT/PIP/Tarball run into Runfile implicitly.
+
 The plan's detected OS description is factual; `os_policy` names the internal
 reviewed repository/kernel policy. `gpu_source=pci` indicates recovery before a
 working KFD driver, while `kfd+pci` means both sources agreed.
@@ -306,11 +352,11 @@ Mixed Ryzen, Radeon, and Instinct classes are rejected on every host unless an
 explicit reviewed policy is added. Supplying multiple targets does not bypass
 that rule.
 
-The public plan labels are `gfx`, `gpu_class`, `gpu_source`, `os`, `os_policy`,
-`method`, `artifact`, `driver_mode`, `driver_status`, `action`, `kernel_status`,
-`kernel_target`, `kernel_package`, and optional informational `product_name`.
-Actions are ordered records; collection values are rendered as sorted
-comma-separated fields and records containing commas are CSV-quoted.
+The public plan labels include `gfx`, `gpu_count`, `gpu_class`, `gpu_source`,
+`lookup_url`, `fallback_recommended`, `os`, `os_policy`, `method`, `artifact`,
+`driver_mode`, `driver_status`, `action`, `kernel_status`, `kernel_target`, and
+`kernel_package`, plus optional `unmapped_pci` and informational `product_name`.
+Actions and collection values are rendered deterministically.
 
 Inspect a kernel mismatch without changing the host:
 
@@ -402,44 +448,45 @@ reboot. `--skip-reboot` suppresses that command. Verification reports pending
 instead of claiming success when the current run changed state that must be
 activated by reboot.
 
-After reboot, verify APT or tarball installations with:
+After reboot, verify the selected installation method:
 
 ```bash
 sudo bash ./rocm-install.sh --method apt --verify-only
-sudo bash ./rocm-install.sh --method tarball --verify-only
-```
-
-For pip:
-
-```bash
 sudo bash ./rocm-install.sh --method pip --verify-only
+sudo bash ./rocm-install.sh --method tarball --verify-only
+sudo bash ./rocm-install.sh --method runfile --gpu-arch all --verify-only
 ```
 
 Verification requires both `rocminfo` and `amd-smi version`. Every requested
 GFX target must appear as a `rocminfo` agent; extra agents are allowed.
-`amd-smi version` must report exactly ROCm 7.14.0. The selected method controls
-the absolute verification root: APT uses `/opt/rocm/core-7.14/bin`, tarball uses
-`/opt/rocm/bin`, and pip uses `/opt/rocm-7.14.0-venv/bin`.
+`amd-smi version` must report exactly ROCm 7.14.0. For 4×R9700, confirm that
+`rocminfo` can query `gfx1201`; this workflow does not require a separate HIP
+test per card.
+
+APT uses `/opt/rocm/core-7.14/bin`, Runfile uses
+`/opt/rocm/core-7.14.0/bin`, tarball uses `/opt/rocm/bin`, and pip uses
+`/opt/rocm-7.14.0-venv/bin`.
 
 ## Uninstall
 
-Interactive uninstall asks for confirmation. `--non-interactive` skips that
-prompt. The uninstall path:
+Interactive uninstall asks for confirmation; `--non-interactive` skips it.
 
-- purges only installed architecture-specific `amdrocm` ROCm 7.14 full SDK
-  package candidates;
-- removes `/opt/rocm/core-7.14`, `/opt/rocm-7.14.0`, and
-  `/opt/rocm-7.14.0-venv`;
-- removes `/opt/rocm` only when it points to `/opt/rocm-7.14.0`;
-- removes the ROCm APT source, ROCm package key, profile, linker file, and udev
-  rules created by the installer;
-- reloads the linker cache and udev rules.
+APT/PIP/Tarball uninstall retains the existing managed cleanup behavior. A
+registered Runfile installation must be removed with the same pinned official
+Runfile rather than recursive deletion:
 
-Uninstall deliberately leaves legacy `rocm*` packages, `amdgpu-dkms`, the SSH
-drop-in, OpenSSH package, AMDGPU repository configuration, optional tools, NTP
-configuration, user group membership, and every kernel package unchanged.
-Legacy packages are only removed during the explicit latest APT migration
-described above.
+```bash
+sudo bash ./rocm-install.sh --method runfile --gpu-arch all --uninstall
+```
+
+That invokes `uninstall-rocm gfx=all target=/opt`, removes the script-managed
+profile/linker/udev files and Runfile registration marker, and leaves AMDGPU
+installed. Package-manager and Runfile layouts cannot be uninstalled through
+each other's path.
+
+All uninstall paths deliberately leave `amdgpu-dkms`, the SSH package/drop-in,
+optional tools, NTP configuration, user group membership, and kernel packages
+unchanged.
 
 ## Troubleshooting
 

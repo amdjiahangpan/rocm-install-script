@@ -67,10 +67,10 @@ assert_command_output_eq "$ROCM_MULTIARCH_TARBALL_ARTIFACT" "tarball plans one f
 assert_command_output_eq "amdrocm-core-sdk7.14-gfx1151" "single-GFX APT composition stays exact" resolve_plan_artifacts apt gfx1151
 assert_command_output_eq "rocm[libraries,device-gfx1151]==7.14.0" "single-GFX pip composition stays exact" resolve_plan_artifacts pip gfx1151
 assert_command_output_eq "therock-dist-linux-gfx1151-7.14.0.tar.gz" "single-GFX tarball composition stays exact" resolve_plan_artifacts tarball gfx1151
-assert_fails "plan artifact composition rejects an unknown method" resolve_plan_artifacts runfile "$multi_gfxes"
+assert_command_output_eq "$ROCM_RUNFILE_URL" "Runfile plans the pinned official installer" resolve_plan_artifacts runfile "$multi_gfxes"
 assert_fails "APT plan composition rejects a nonnormalized GFX collection" resolve_plan_artifacts apt $'gfx1201\ngfx1151'
 
-assert_eq $'gfxes\ngpu_classes\ngpu_source\nos_key\nos_description\nrepo_slug\nmethod\nartifacts\ndriver_mode\ndriver_status\nactions\nkernel_status\nkernel_target\nkernel_package' "$(install_plan_keys)" "install plan includes detected host, driver state, actions, and kernel fields"
+assert_eq $'gfxes\ngpu_count\ngpu_classes\ngpu_source\nlookup_url\nfallback_recommended\nos_key\nos_description\nrepo_slug\nmethod\nartifacts\ndriver_mode\ndriver_status\nactions\nkernel_status\nkernel_target\nkernel_package' "$(install_plan_keys)" "install plan includes GPU inventory, lookup guidance, driver state, actions, and kernel fields"
 assert_command_output_eq 'AMD Radeon Graphics' "plain CSV records stay unquoted" records_to_csv 'AMD Radeon Graphics'
 assert_command_output_eq '"AMD Radeon, Pro"' "CSV records containing commas are quoted" records_to_csv 'AMD Radeon, Pro'
 assert_command_output_eq '"AMD ""Radeon"" Pro"' "CSV records containing quotes are quoted and escaped" records_to_csv 'AMD "Radeon" Pro'
@@ -79,7 +79,7 @@ OS_DESCRIPTION='Ubuntu 24.04.2 LTS'
 MOCK_PLAN_DRIVER_STATUS=install-required
 resolve_driver_status() { printf '%s\n' "$MOCK_PLAN_DRIVER_STATUS"; }
 set_valid_install_plan() {
-    local method=$1 gfxes=$2 product_names=${3:-} artifacts gpu_classes driver_mode driver_status actions kernel_policy kernel_target kernel_package
+    local method=$1 gfxes=$2 product_names=${3:-} artifacts gpu_classes driver_mode fallback_recommended kernel_policy kernel_target kernel_package
 
     if artifacts=$(resolve_plan_artifacts "$method" "$gfxes"); then
         :
@@ -92,8 +92,11 @@ set_valid_install_plan() {
     IFS='|' read -r kernel_target kernel_package <<< "$kernel_policy"
     INSTALL_PLAN=(
         [gfxes]="$gfxes"
+        [gpu_count]="${GPU_DEVICE_COUNT:-0}"
         [gpu_classes]="$gpu_classes"
         [gpu_source]=explicit
+        [lookup_url]="$ROCM_GPU_LOOKUP_URL"
+        [fallback_recommended]=$([[ "$gfxes" == *$'\n'* ]] && printf true || printf false)
         [os_key]=ubuntu-24.04.4
         [os_description]="$OS_DESCRIPTION"
         [repo_slug]=ubuntu2404
@@ -192,9 +195,12 @@ assert_success "install plan resolves from normalized GPU identity collections" 
 assert_eq "$valid_plan_gfxes" "${INSTALL_PLAN[gfxes]}" "resolved plan retains normalized GFX records"
 assert_eq "$valid_plan_packages" "${INSTALL_PLAN[artifacts]}" "resolved APT plan retains one package per GFX"
 assert_eq "$GPU_PRODUCT_NAMES" "${INSTALL_PLAN[product_names]}" "resolved plan retains normalized product-name records"
-assert_eq "15" "${#INSTALL_PLAN[@]}" "resolved plan contains detected host, driver state, actions, kernel fields, and optional product names"
+assert_eq "18" "${#INSTALL_PLAN[@]}" "resolved plan contains GPU inventory, lookup guidance, host, driver, actions, kernel, and product names"
+assert_eq 0 "${INSTALL_PLAN[gpu_count]}" "explicit pre-provision plan records an unknown physical count"
 assert_eq radeon "${INSTALL_PLAN[gpu_classes]}" "resolved plan records the Radeon policy class"
 assert_eq explicit "${INSTALL_PLAN[gpu_source]}" "resolved plan records the explicit GPU source"
+assert_eq "$ROCM_GPU_LOOKUP_URL" "${INSTALL_PLAN[lookup_url]}" "resolved plan records the official lookup URL"
+assert_eq true "${INSTALL_PLAN[fallback_recommended]}" "heterogeneous GFX plan recommends Runfile all"
 assert_eq dkms "${INSTALL_PLAN[driver_mode]}" "Ubuntu 24 Radeon auto mode resolves to DKMS"
 assert_eq install-required "${INSTALL_PLAN[driver_status]}" "missing AMDGPU DKMS resolves install-required"
 assert_eq 'kernel:install-required' "${INSTALL_PLAN[actions]}" "non-ready kernel blocks later actions"
@@ -202,9 +208,50 @@ assert_eq install-required "${INSTALL_PLAN[kernel_status]}" "mismatched or unava
 assert_eq '6.8.*-generic' "${INSTALL_PLAN[kernel_target]}" "non-Ryzen Ubuntu 24 plan records the generic target"
 assert_eq linux-generic "${INSTALL_PLAN[kernel_package]}" "non-Ryzen Ubuntu 24 plan records the generic metapackage"
 
-expected_multi_plan=$'INSTALL PLAN\ngfx=gfx1200,gfx1201\ngpu_class=radeon\ngpu_source=explicit\nos=Ubuntu 24.04.2 LTS\nos_policy=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1200,amdrocm-core-sdk7.14-gfx1201\ndriver_mode=dkms\ndriver_status=install-required\naction=kernel:install-required\nkernel_status=install-required\nkernel_target=6.8.*-generic\nkernel_package=linux-generic\nproduct_name=AMD Radeon 8060S Graphics,AMD Radeon AI PRO R9700'
+expected_multi_plan=$'INSTALL PLAN\ngfx=gfx1200,gfx1201\ngpu_count=0\ngpu_class=radeon\ngpu_source=explicit\nlookup_url=https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile\nfallback_recommended=true\nos=Ubuntu 24.04.2 LTS\nos_policy=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1200,amdrocm-core-sdk7.14-gfx1201\ndriver_mode=dkms\ndriver_status=install-required\naction=kernel:install-required\nkernel_status=install-required\nkernel_target=6.8.*-generic\nkernel_package=linux-generic\nproduct_name=AMD Radeon 8060S Graphics,AMD Radeon AI PRO R9700\nrecommendation=--method runfile --gpu-arch all'
 assert_command_output_eq "$expected_multi_plan" "multi-GFX install plan rendering includes GPU policy and omits repository internals" print_install_plan
 
+GPU_ARCHES=gfx1201
+GPU_CLASSES=radeon
+GPU_DETECTION_SOURCE=kfd+unmapped-pci
+GPU_DEVICE_COUNT=4
+GPU_UNMAPPED_PCI=$'0000:01:00.0|1002:7001|0001\n0000:02:00.0|1002:7002|0001\n0000:03:00.0|1002:7003|0001\n0000:04:00.0|1002:7004|0001'
+GPU_PRODUCT_NAMES='AMD Radeon AI PRO R9700'
+KERNEL_VERSION=6.8.0-138-generic
+assert_success "four-R9700 identity resolves an install plan" resolve_install_plan
+assert_eq 4 "${INSTALL_PLAN[gpu_count]}" "four-R9700 plan preserves physical GPU count"
+assert_eq kfd+unmapped-pci "${INSTALL_PLAN[gpu_source]}" "four-R9700 plan records unmapped PCI evidence"
+assert_contains "${INSTALL_PLAN[unmapped_pci]}" "1002:7004" "four-R9700 plan retains every unmapped PCI record"
+assert_eq false "${INSTALL_PLAN[fallback_recommended]}" "four identical R9700 cards need one gfx1201 artifact"
+
+INSTALL_METHOD=runfile
+GPU_RUNFILE_GFX=all
+assert_success "four-R9700 identity resolves an explicit Runfile all plan" resolve_install_plan
+assert_eq runfile "${INSTALL_PLAN[method]}" "Runfile plan records its method"
+assert_eq all "${INSTALL_PLAN[runfile_gfx]}" "Runfile plan records gfx=all"
+assert_eq "$ROCM_RUNFILE_URL" "${INSTALL_PLAN[artifacts]}" "Runfile plan pins the official artifact"
+assert_contains "$(print_install_plan)" "runfile_gfx=all" "Runfile confirmation renders the all-architecture payload"
+INSTALL_METHOD=apt
+GPU_RUNFILE_GFX=''
+
+GPU_ARCHES=$'gfx1151\ngfx1201'
+GPU_CLASSES=''
+GPU_DETECTION_SOURCE=explicit
+GPU_DEVICE_COUNT=0
+GPU_UNMAPPED_PCI=''
+GPU_PRODUCT_NAMES=''
+mixed_class_output="${TEST_TEMP_ROOT}/mixed-class-output"
+if resolve_install_plan 2> "$mixed_class_output"; then
+    fail "mixed Ryzen and Radeon classes fail closed"
+fi
+assert_contains "$(<"$mixed_class_output")" "$ROCM_RUNFILE_NAME" "mixed-class failure prints the standalone official Runfile command"
+assert_contains "$(<"$mixed_class_output")" "gfx=all" "mixed-class fallback installs all architectures"
+
+GPU_DEVICE_COUNT=0
+GPU_UNMAPPED_PCI=''
+GPU_DETECTION_SOURCE=explicit
+
+GPU_CLASSES=''
 GPU_ARCHES=gfx1151
 GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'
 KERNEL_VERSION=6.14.0-1020-oem
@@ -228,17 +275,17 @@ GPU_PRODUCT_NAMES=''
 KERNEL_VERSION=''
 
 set_valid_install_plan pip "$valid_plan_gfxes"
-expected_pip_plan=$'INSTALL PLAN\ngfx=gfx1200,gfx1201\ngpu_class=radeon\ngpu_source=explicit\nos=Ubuntu 24.04.2 LTS\nos_policy=ubuntu-24.04.4\nmethod=pip\nartifact="rocm[libraries,device-gfx1200,device-gfx1201]==7.14.0"\ndriver_mode=dkms\ndriver_status=install-required\naction=kernel:install-required\nkernel_status=install-required\nkernel_target=6.8.*-generic\nkernel_package=linux-generic'
+expected_pip_plan=$'INSTALL PLAN\ngfx=gfx1200,gfx1201\ngpu_count=0\ngpu_class=radeon\ngpu_source=explicit\nlookup_url=https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile\nfallback_recommended=true\nos=Ubuntu 24.04.2 LTS\nos_policy=ubuntu-24.04.4\nmethod=pip\nartifact="rocm[libraries,device-gfx1200,device-gfx1201]==7.14.0"\ndriver_mode=dkms\ndriver_status=install-required\naction=kernel:install-required\nkernel_status=install-required\nkernel_target=6.8.*-generic\nkernel_package=linux-generic\nrecommendation=--method runfile --gpu-arch all'
 assert_command_output_eq "$expected_pip_plan" "pip plan renders GPU policy and quotes its comma-delimited requirement" print_install_plan
 
 set_valid_install_plan tarball gfx1151
-expected_single_plan=$'INSTALL PLAN\ngfx=gfx1151\ngpu_class=ryzen\ngpu_source=explicit\nos=Ubuntu 24.04.2 LTS\nos_policy=ubuntu-24.04.4\nmethod=tarball\nartifact=therock-dist-linux-gfx1151-7.14.0.tar.gz\ndriver_mode=inbox\ndriver_status=install-required\naction=kernel:install-required\nkernel_status=install-required\nkernel_target=6.14.*-oem\nkernel_package=linux-oem-6.14'
+expected_single_plan=$'INSTALL PLAN\ngfx=gfx1151\ngpu_count=0\ngpu_class=ryzen\ngpu_source=explicit\nlookup_url=https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile\nfallback_recommended=false\nos=Ubuntu 24.04.2 LTS\nos_policy=ubuntu-24.04.4\nmethod=tarball\nartifact=therock-dist-linux-gfx1151-7.14.0.tar.gz\ndriver_mode=inbox\ndriver_status=install-required\naction=kernel:install-required\nkernel_status=install-required\nkernel_target=6.14.*-oem\nkernel_package=linux-oem-6.14'
 assert_command_output_eq "$expected_single_plan" "single-GFX install plan renders its Ryzen policy" print_install_plan
 assert_not_contains "$expected_single_plan" "repo_slug" "install plan rendering omits repo_slug"
 assert_not_contains "$expected_single_plan" "product_name" "install plan rendering omits absent optional product names"
 
 set_valid_install_plan apt gfx1151 $'AMD "Creator" Edition\nAMD Radeon, Pro'
-expected_quoted_product_plan=$'INSTALL PLAN\ngfx=gfx1151\ngpu_class=ryzen\ngpu_source=explicit\nos=Ubuntu 24.04.2 LTS\nos_policy=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1151\ndriver_mode=inbox\ndriver_status=install-required\naction=kernel:install-required\nkernel_status=install-required\nkernel_target=6.14.*-oem\nkernel_package=linux-oem-6.14\nproduct_name="AMD ""Creator"" Edition","AMD Radeon, Pro"'
+expected_quoted_product_plan=$'INSTALL PLAN\ngfx=gfx1151\ngpu_count=0\ngpu_class=ryzen\ngpu_source=explicit\nlookup_url=https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile\nfallback_recommended=false\nos=Ubuntu 24.04.2 LTS\nos_policy=ubuntu-24.04.4\nmethod=apt\nartifact=amdrocm-core-sdk7.14-gfx1151\ndriver_mode=inbox\ndriver_status=install-required\naction=kernel:install-required\nkernel_status=install-required\nkernel_target=6.14.*-oem\nkernel_package=linux-oem-6.14\nproduct_name="AMD ""Creator"" Edition","AMD Radeon, Pro"'
 assert_command_output_eq "$expected_quoted_product_plan" "product names containing commas and quotes render with GPU policy" print_install_plan
 
 print_plan_to_full() {

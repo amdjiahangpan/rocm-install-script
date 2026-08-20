@@ -305,6 +305,18 @@ AMDGPU_RUNTIME_KFD_ROOT="${ROOT_DIR}/tests/fixtures/rx-9060-xt/kfd"
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
 INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
 assert_success "running AMDGPU DKMS module, PCI binding, and KFD target are active" amdgpu_dkms_runtime_is_active
+r9700_runtime_pci_root="${TEST_TEMP_ROOT}/r9700-runtime-pci"
+cp -a "${ROOT_DIR}/tests/fixtures/r9700-four-gpu/pci" "$r9700_runtime_pci_root"
+for r9700_runtime_device in "$r9700_runtime_pci_root"/*; do
+    ln -s "$runtime_driver_root" "${r9700_runtime_device}/driver"
+done
+AMDGPU_RUNTIME_PCI_ROOT=$r9700_runtime_pci_root
+AMDGPU_RUNTIME_KFD_ROOT="${ROOT_DIR}/tests/fixtures/r9700-four-gpu/kfd"
+INSTALL_PLAN=([gfxes]=gfx1201 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+assert_success "active DKMS accepts four bound unmapped R9700 PCI devices with matching KFD" amdgpu_dkms_runtime_is_active
+AMDGPU_RUNTIME_PCI_ROOT=$runtime_pci_root
+AMDGPU_RUNTIME_KFD_ROOT="${ROOT_DIR}/tests/fixtures/rx-9060-xt/kfd"
+INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
 assert_fails "an inbox module path is not active DKMS" amdgpu_dkms_runtime_is_active
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'

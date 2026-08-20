@@ -16,6 +16,15 @@ rx9060_fixture="${ROOT_DIR}/tests/fixtures/rx-9060-xt"
 rx9060_kfd_root="${rx9060_fixture}/kfd"
 rx9060_pci_root="${rx9060_fixture}/pci"
 missing_pci_root="${TEST_TEMP_ROOT}/missing-pci-root"
+r9700_fixture="${ROOT_DIR}/tests/fixtures/r9700-four-gpu"
+r9700_kfd_root="${r9700_fixture}/kfd"
+r9700_pci_root="${TEST_TEMP_ROOT}/r9700-pci"
+r9700_driver_root="${TEST_TEMP_ROOT}/drivers/amdgpu"
+cp -a "${r9700_fixture}/pci" "$r9700_pci_root"
+mkdir -p "$r9700_driver_root"
+for r9700_device_root in "$r9700_pci_root"/*; do
+    ln -s "$r9700_driver_root" "${r9700_device_root}/driver"
+done
 
 assert_eq "gfx1151" "$(kfd_gfx_target 110501)" "KFD 110501 decodes with AMD's decimal-field algorithm"
 assert_eq "gfx90a" "$(kfd_gfx_target 90010)" "KFD stepping is rendered as a hexadecimal gfx digit"
@@ -24,6 +33,8 @@ assert_eq "AMD Radeon 8060S Graphics" "$(detect_gpu_product_names "$observed_drm
 assert_eq $'gfx1151\ngfx1201' "$(detect_gpu_architectures "$heterogeneous_kfd_root")" "heterogeneous KFD nodes normalize all supported targets"
 assert_eq 'gfx1200|radeon' "$(lookup_pci_gpu_record 7590 c0)" "RX 9060 XT PCI ID resolves to gfx1200 Radeon"
 assert_eq 'gfx1200|radeon' "$(detect_gpu_architectures_from_pci "$rx9060_pci_root")" "PCI fallback recovers RX 9060 XT before KFD exists"
+assert_eq gfx1201 "$(detect_gpu_architectures "$r9700_kfd_root")" "four R9700 KFD nodes normalize to gfx1201"
+assert_eq 4 "$(count_kfd_gpu_devices "$r9700_kfd_root")" "four R9700 KFD nodes preserve the physical GPU count"
 assert_eq $'AMD Radeon 8060S Graphics\nAMD Radeon AI PRO R9700' "$(detect_gpu_product_names "$heterogeneous_drm_root" "$heterogeneous_ids")" "every DRM card contributes its direct or exact-ID product name"
 strict_product_names=''
 if strict_product_names=$(bash -Eeuo pipefail -c '
@@ -68,6 +79,40 @@ assert_eq gfx1200 "$GPU_ARCHES" "RX 9060 identity stores gfx1200"
 assert_eq radeon "$GPU_CLASSES" "RX 9060 identity stores its Radeon class"
 assert_eq kfd+pci "$GPU_DETECTION_SOURCE" "matching KFD and PCI records report both sources"
 
+GPU_DETECTION_KFD_ROOT=$r9700_kfd_root
+GPU_DETECTION_PCI_ROOT=$r9700_pci_root
+GPU_DETECTION_DRM_ROOT="${TEST_TEMP_ROOT}/missing-drm-root"
+GPU_ARCHES=''
+assert_success "valid R9700 KFD accepts bound unmapped PCI devices" resolve_gpu_identity
+assert_eq gfx1201 "$GPU_ARCHES" "four R9700 cards select one gfx1201 artifact architecture"
+assert_eq 4 "$GPU_DEVICE_COUNT" "R9700 identity preserves four physical devices"
+assert_eq kfd+unmapped-pci "$GPU_DETECTION_SOURCE" "R9700 identity reports unmapped PCI evidence"
+assert_contains "$GPU_UNMAPPED_PCI" "1002:7001" "unmapped R9700 evidence includes the first PCI ID"
+assert_contains "$GPU_UNMAPPED_PCI" "1002:7004" "unmapped R9700 evidence includes the fourth PCI ID"
+rm "${r9700_pci_root}/0000:04:00.0/driver"
+GPU_ARCHES=''
+assert_fails "one unbound unmapped PCI device fails closed" resolve_gpu_identity
+ln -s "$r9700_driver_root" "${r9700_pci_root}/0000:04:00.0/driver"
+
+INSTALL_METHOD=runfile
+GPU_ARCHES=all
+assert_success "explicit Runfile all uses the detected KFD inventory" resolve_gpu_identity
+assert_eq gfx1201 "$GPU_ARCHES" "Runfile all retains detected gfx1201 for policy and verification"
+assert_eq all "$GPU_RUNFILE_GFX" "Runfile all records the all-architecture payload"
+assert_eq 4 "$GPU_DEVICE_COUNT" "Runfile all preserves four physical R9700 devices"
+INSTALL_METHOD=apt
+
+INSTALL_METHOD=runfile
+GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
+GPU_DETECTION_PCI_ROOT=$rx9060_pci_root
+GPU_ARCHES=all
+assert_success "explicit Runfile all accepts reviewed PCI recovery without KFD" resolve_gpu_identity
+assert_eq gfx1200 "$GPU_ARCHES" "PCI-only Runfile all retains concrete gfx1200 policy"
+assert_eq pci "$GPU_DETECTION_SOURCE" "PCI-only Runfile all records PCI source"
+assert_eq all "$GPU_RUNFILE_GFX" "PCI-only recovery retains the all payload"
+INSTALL_METHOD=apt
+
+GPU_DETECTION_PCI_ROOT=$rx9060_pci_root
 GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
 GPU_ARCHES=''
 assert_success "RX 9060 PCI fallback resolves when KFD is unavailable" resolve_gpu_identity
@@ -135,6 +180,22 @@ fi
 assert_contains "$unknown_pci_output" "1002:9999" "unknown PCI failure reports the exact AMD device ID"
 
 GPU_DETECTION_KFD_ROOT=$rx9060_kfd_root
+
+mixed_bound_pci_root="${TEST_TEMP_ROOT}/pci-mixed-bound"
+cp -a "$mixed_pci_root/." "$mixed_bound_pci_root/"
+for mixed_bound_device in "$mixed_bound_pci_root"/*; do
+    ln -s "$r9700_driver_root" "${mixed_bound_device}/driver"
+done
+mixed_kfd_root="${TEST_TEMP_ROOT}/kfd-two-gfx1201"
+mkdir -p "${mixed_kfd_root}/1" "${mixed_kfd_root}/2"
+printf 'cpu_cores_count 0\ngfx_target_version 120001\n' > "${mixed_kfd_root}/1/properties"
+printf 'cpu_cores_count 0\ngfx_target_version 120001\n' > "${mixed_kfd_root}/2/properties"
+GPU_DETECTION_KFD_ROOT=$mixed_kfd_root
+GPU_DETECTION_PCI_ROOT=$mixed_bound_pci_root
+GPU_ARCHES=''
+assert_fails "known PCI gfx1200 cannot be discarded beside an unmapped card when KFD reports gfx1201" resolve_gpu_identity
+assert_eq "" "$GPU_ARCHES" "partial known PCI mismatch leaves no architecture plan"
+GPU_DETECTION_KFD_ROOT=$rx9060_kfd_root
 GPU_DETECTION_PCI_ROOT=$mixed_pci_root
 GPU_ARCHES=''
 identity_unknown_pci_output=''
@@ -156,6 +217,49 @@ GPU_ARCHES=''
 assert_fails "informational product names cannot infer an architecture" resolve_gpu_identity
 assert_eq "" "$GPU_ARCHES" "failed automatic detection leaves no architecture collection"
 assert_eq "" "$GPU_PRODUCT_NAMES" "product names are not stored when no architecture is detected"
+
+manual_pci_root="${TEST_TEMP_ROOT}/manual-unknown-pci"
+mkdir -p "${manual_pci_root}/0000:05:00.0"
+printf '0x1002\n' > "${manual_pci_root}/0000:05:00.0/vendor"
+printf '0x7999\n' > "${manual_pci_root}/0000:05:00.0/device"
+printf '0x01\n' > "${manual_pci_root}/0000:05:00.0/revision"
+printf '0x030000\n' > "${manual_pci_root}/0000:05:00.0/class"
+MOCK_INTERACTIVE=true
+is_interactive_terminal() { [[ "$MOCK_INTERACTIVE" == true ]]; }
+NON_INTERACTIVE=false
+GPU_DETECTION_KFD_ROOT=$no_gpu_kfd_root
+GPU_DETECTION_PCI_ROOT=$manual_pci_root
+GPU_DETECTION_DRM_ROOT="${TEST_TEMP_ROOT}/missing-drm-root"
+GPU_ARCHES=''
+manual_prompt_output="${TEST_TEMP_ROOT}/manual-prompt-output"
+if resolve_gpu_identity <<< $'Radeon AI PRO R9700\ngfx1201' 2> "$manual_prompt_output"; then
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    fail "interactive unknown GPU accepts a reviewed manual GFX"
+fi
+assert_eq gfx1201 "$GPU_ARCHES" "manual recovery stores gfx1201"
+assert_eq radeon "$GPU_CLASSES" "manual recovery derives the Radeon class only from gfx1201"
+assert_eq manual "$GPU_DETECTION_SOURCE" "manual recovery records its source"
+assert_eq 'Radeon AI PRO R9700' "$GPU_MODEL_NAME" "manual model text is retained for display"
+assert_eq 1 "$GPU_DEVICE_COUNT" "manual PCI inventory records one physical device"
+assert_contains "$(<"$manual_prompt_output")" "$ROCM_GPU_LOOKUP_URL" "manual prompt prints the official lookup URL"
+assert_contains "$(<"$manual_prompt_output")" "$ROCM_GPU_LOOKUP_ZH_URL" "manual prompt prints the Chinese lookup URL"
+
+NON_INTERACTIVE=true
+GPU_ARCHES=''
+assert_fails "non-interactive unknown GPU requires --gpu-arch" resolve_gpu_identity
+
+GPU_DETECTION_KFD_ROOT=$r9700_kfd_root
+GPU_DETECTION_PCI_ROOT=$r9700_pci_root
+GPU_ARCHES=gfx1200
+manual_mismatch_output="${TEST_TEMP_ROOT}/manual-mismatch-output"
+if resolve_gpu_identity 2> "$manual_mismatch_output"; then
+    fail "explicit GFX that disagrees with KFD fails closed"
+fi
+assert_eq "" "$GPU_ARCHES" "manual mismatch clears the incorrect GFX"
+assert_contains "$(<"$manual_mismatch_output")" "--method runfile --gpu-arch all" "manual mismatch prints the explicit Runfile fallback"
+unset -f is_interactive_terminal
+NON_INTERACTIVE=false
 
 installer_source=$(<"${ROOT_DIR}/rocm-install.sh")
 assert_not_contains "$installer_source" "ROCM_714_MODEL_RECORDS" "installer has no model records"

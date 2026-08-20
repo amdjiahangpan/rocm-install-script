@@ -8,6 +8,7 @@ bash "${TEST_DIR}/test_entrypoint.sh"
 bash "${TEST_DIR}/test_gpu_detection.sh"
 bash "${TEST_DIR}/test_artifact_commands.sh"
 bash "${TEST_DIR}/test_kernel_state.sh"
+bash "${TEST_DIR}/test_runfile.sh"
 bash "${TEST_DIR}/test_system_flow.sh"
 bash "${TEST_DIR}/test_lifecycle.sh"
 

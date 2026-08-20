@@ -40,6 +40,9 @@ assert_eq "31.40" "$AMDGPU_RELEASE" "AMDGPU migration release is fixed at 31.40"
 assert_eq "https://repo.amd.com/rocm/packages-multi-arch" "$ROCM_PACKAGES_ROOT" "APT package root is fixed"
 assert_eq "https://repo.amd.com/rocm/whl-multi-arch/" "$ROCM_WHL_INDEX" "wheel index is fixed"
 assert_eq "https://repo.amd.com/rocm/tarball-multi-arch/" "$ROCM_TARBALL_ROOT" "tarball root is fixed"
+assert_eq "https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile" "$ROCM_GPU_LOOKUP_URL" "official GPU lookup URL is fixed"
+assert_eq "https://github.com/amdjiahangpan/hello-rocm/blob/master/docs/zh/00-environment/rocm-gpu-architecture-table.md" "$ROCM_GPU_LOOKUP_ZH_URL" "Chinese GPU lookup URL is fixed"
+assert_eq "https://repo.radeon.com/rocm/installer/rocm-runfile-installer/rocm-rel-7.14/rocm-installer-7.14.0-7.run" "$ROCM_RUNFILE_URL" "official ROCm 7.14 Runfile URL is fixed"
 
 reset_defaults
 assert_eq "compute" "$WORKLOAD" "compute is the only default workload"
@@ -76,6 +79,14 @@ assert_success "pip method parses" parse_succeeds --method pip
 assert_eq "pip" "$INSTALL_METHOD" "pip method is retained"
 assert_success "tarball method parses" parse_succeeds --method tarball
 assert_eq "tarball" "$INSTALL_METHOD" "tarball method is retained"
+assert_success "runfile method parses" parse_succeeds --method runfile --gpu-arch all
+assert_eq runfile "$INSTALL_METHOD" "runfile method is retained"
+assert_eq all "$GPU_ARCHES" "runfile all architecture is retained"
+assert_fails "APT rejects all architecture" parse_fails --method apt --gpu-arch all
+assert_fails "pip rejects all architecture" parse_fails --method pip --gpu-arch all
+assert_fails "tarball rejects all architecture" parse_fails --method tarball --gpu-arch all
+assert_fails "runfile requires explicit all architecture" parse_fails --method runfile
+assert_fails "runfile rejects architecture-specific payload" parse_fails --method runfile --gpu-arch gfx1201
 
 parse_succeeds --gpu-arch gfx1151 --driver-mode dkms --skip-ssh --skip-reboot --non-interactive
 assert_eq "gfx1151" "$GPU_ARCHES" "GPU architecture collection retains one architecture"
@@ -102,8 +113,7 @@ assert_fails "RHEL is rejected" normalize_os_key rhel 10.2
 
 assert_fails "version selection is not part of the fixed-release CLI" parse_fails --version 7.14.0
 assert_fails "graphics workload is rejected" parse_fails --workload graphics
-assert_fails "runfile method is rejected" parse_fails --method runfile
-assert_fails "legacy pkgman method is rejected" parse_fails --method pkgman
+assert_fails "unknown installation method is rejected" parse_fails --method pkgman
 assert_fails "model selection is not part of the gfx-only CLI" parse_fails --gpu-model max-pro-485
 assert_fails "unknown driver mode is rejected" parse_fails --driver-mode legacy
 assert_fails "unknown options are rejected" parse_fails --distribution ubuntu
@@ -124,12 +134,13 @@ assert_contains "$ENTRYPOINT_STDERR" "--help" "direct launcher tells users how t
 
 help_output=$(show_help)
 assert_contains "$help_output" "ROCm 7.14.0" "help names the fixed release"
-assert_contains "$help_output" "apt, pip, or tarball" "help lists the three install methods"
+assert_contains "$help_output" "apt, pip, tarball, or runfile" "help lists all four install methods"
 assert_contains "$help_output" "may be repeated" "help documents repeated GPU architecture overrides"
 assert_contains "$help_output" "--prepare-kernel" "help documents explicit kernel preparation"
 assert_contains "$help_output" "--reboot-after-kernel" "help documents explicit one-shot kernel reboot"
-assert_not_contains "$help_output" "graphics" "help does not advertise graphics"
-assert_not_contains "$help_output" "runfile" "help does not advertise runfile"
+assert_contains "$help_output" "$ROCM_GPU_LOOKUP_URL" "help prints the official GPU lookup URL"
+assert_contains "$help_output" "gfx=all" "help documents the explicit Runfile all fallback"
+assert_not_contains "$help_output" "graphics workload" "help does not advertise a graphics workload"
 assert_not_contains "$help_output" "--version" "help does not advertise version selection"
 assert_not_contains "$help_output" "--gpu-model" "help does not advertise model selection"
 assert_not_contains "$help_output" "Debian" "help stays Ubuntu-only"
