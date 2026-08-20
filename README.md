@@ -20,23 +20,23 @@ pass before the script changes the system.
 
 ## Quick Start
 
-Run the script directly from the public `unified-installer` branch:
+Run the script directly from the public `main` branch:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/main/rocm-install.sh | sudo bash
 ```
 
 Or download it first:
 
 ```bash
-curl -fLO https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/unified-installer/rocm-install.sh
+curl -fLO https://raw.githubusercontent.com/amdjiahangpan/rocm-install-script/main/rocm-install.sh
 sudo bash ./rocm-install.sh
 ```
 
 Or clone the public branch:
 
 ```bash
-git clone --branch unified-installer --single-branch https://github.com/amdjiahangpan/rocm-install-script.git
+git clone --branch main --single-branch https://github.com/amdjiahangpan/rocm-install-script.git
 cd rocm-install-script
 sudo bash ./rocm-install.sh
 ```
