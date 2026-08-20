@@ -252,8 +252,14 @@ deps=install rocm gfx=all compo=core,core-dev
 
 The Runfile performs its built-in checksum validation. AMDGPU driver management
 remains in this script's driver state machine; the Runfile path does not install
-a second driver. Runfile and package-manager layouts cannot be mixed. A matching
-registered Runfile installation is retained unchanged on repeated runs.
+a second driver. Before any driver or prerequisite mutation, the installer
+rejects APT, legacy package-manager, pip, tarball, unregistered Runfile, and
+stale Runfile layouts that would be mixed.
+
+A repeated Runfile run validates the atomic registration marker and queries
+`gfx=list-installed`; it skips installation only when every reviewed GFX target
+is present. If payload validation or marker creation fails after installation,
+the pinned official uninstaller rolls the partial Runfile layout back.
 
 The URL query `fam=all` only controls the documentation selector. The actual
 installation fallback is the Runfile argument `gfx=all`.
