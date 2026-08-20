@@ -102,6 +102,16 @@ assert_eq all "$GPU_RUNFILE_GFX" "Runfile all records the all-architecture paylo
 assert_eq 4 "$GPU_DEVICE_COUNT" "Runfile all preserves four physical R9700 devices"
 INSTALL_METHOD=apt
 
+INSTALL_METHOD=runfile
+GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
+GPU_DETECTION_PCI_ROOT=$rx9060_pci_root
+GPU_ARCHES=all
+assert_success "explicit Runfile all accepts reviewed PCI recovery without KFD" resolve_gpu_identity
+assert_eq gfx1200 "$GPU_ARCHES" "PCI-only Runfile all retains concrete gfx1200 policy"
+assert_eq pci "$GPU_DETECTION_SOURCE" "PCI-only Runfile all records PCI source"
+assert_eq all "$GPU_RUNFILE_GFX" "PCI-only recovery retains the all payload"
+INSTALL_METHOD=apt
+
 GPU_DETECTION_PCI_ROOT=$rx9060_pci_root
 GPU_DETECTION_KFD_ROOT="${TEST_TEMP_ROOT}/missing-kfd-root"
 GPU_ARCHES=''
@@ -169,6 +179,22 @@ if unknown_pci_output=$(detect_gpu_architectures_from_pci "$mixed_pci_root" 2>&1
 fi
 assert_contains "$unknown_pci_output" "1002:9999" "unknown PCI failure reports the exact AMD device ID"
 
+GPU_DETECTION_KFD_ROOT=$rx9060_kfd_root
+
+mixed_bound_pci_root="${TEST_TEMP_ROOT}/pci-mixed-bound"
+cp -a "$mixed_pci_root/." "$mixed_bound_pci_root/"
+for mixed_bound_device in "$mixed_bound_pci_root"/*; do
+    ln -s "$r9700_driver_root" "${mixed_bound_device}/driver"
+done
+mixed_kfd_root="${TEST_TEMP_ROOT}/kfd-two-gfx1201"
+mkdir -p "${mixed_kfd_root}/1" "${mixed_kfd_root}/2"
+printf 'cpu_cores_count 0\ngfx_target_version 120001\n' > "${mixed_kfd_root}/1/properties"
+printf 'cpu_cores_count 0\ngfx_target_version 120001\n' > "${mixed_kfd_root}/2/properties"
+GPU_DETECTION_KFD_ROOT=$mixed_kfd_root
+GPU_DETECTION_PCI_ROOT=$mixed_bound_pci_root
+GPU_ARCHES=''
+assert_fails "known PCI gfx1200 cannot be discarded beside an unmapped card when KFD reports gfx1201" resolve_gpu_identity
+assert_eq "" "$GPU_ARCHES" "partial known PCI mismatch leaves no architecture plan"
 GPU_DETECTION_KFD_ROOT=$rx9060_kfd_root
 GPU_DETECTION_PCI_ROOT=$mixed_pci_root
 GPU_ARCHES=''

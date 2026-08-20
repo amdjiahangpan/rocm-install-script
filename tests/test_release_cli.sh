@@ -85,6 +85,8 @@ assert_eq all "$GPU_ARCHES" "runfile all architecture is retained"
 assert_fails "APT rejects all architecture" parse_fails --method apt --gpu-arch all
 assert_fails "pip rejects all architecture" parse_fails --method pip --gpu-arch all
 assert_fails "tarball rejects all architecture" parse_fails --method tarball --gpu-arch all
+assert_fails "runfile requires explicit all architecture" parse_fails --method runfile
+assert_fails "runfile rejects architecture-specific payload" parse_fails --method runfile --gpu-arch gfx1201
 
 parse_succeeds --gpu-arch gfx1151 --driver-mode dkms --skip-ssh --skip-reboot --non-interactive
 assert_eq "gfx1151" "$GPU_ARCHES" "GPU architecture collection retains one architecture"

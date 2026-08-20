@@ -495,7 +495,8 @@ lookup_pci_gpu_record() {
 }
 
 detect_gpu_architectures_from_pci() {
-    local root=${1:-} device_path vendor device revision pci_class record normalized_device normalized_revision
+    local root=${1:-} device_path vendor device revision pci_class record normalized_device normalized_revision normalized_records=''
+    local unsupported_found=false
     local -a records=()
 
     [[ $# -eq 1 && -d "$root" ]] || return 1
@@ -518,12 +519,17 @@ detect_gpu_architectures_from_pci() {
                 printf 'Unsupported AMD display PCI device 1002:%s revision %s; provide the complete reviewed --gpu-arch set.\n' \
                     "$normalized_device" "$normalized_revision" >&2
             fi
-            return 2
+            unsupported_found=true
+            continue
         fi
         records+=("$record")
     done
-    ((${#records[@]})) || return 1
-    normalize_records "$(printf '%s\n' "${records[@]}")"
+    if ((${#records[@]})); then
+        normalized_records=$(normalize_records "$(printf '%s\n' "${records[@]}")") || return 1
+        printf '%s\n' "$normalized_records"
+    fi
+    [[ "$unsupported_found" != true ]] || return 2
+    ((${#records[@]}))
 }
 
 count_amd_display_pci_devices() {
@@ -736,6 +742,11 @@ resolve_gpu_identity() {
         else
             pci_status=$?
             if [[ $pci_status -eq 2 && $kfd_status -eq 0 ]]; then
+                if [[ -n "$pci_records" ]]; then
+                    while IFS='|' read -r gfx gpu_class; do
+                        [[ $'\n'"$kfd_gfxes"$'\n' == *$'\n'"$gfx"$'\n'* ]] || return 1
+                    done <<< "$pci_records"
+                fi
                 pci_count=$(count_amd_display_pci_devices "$pci_root") || return 1
                 unmapped_pci=$(detect_unmapped_bound_pci_devices "$pci_root") || return 1
                 [[ $pci_count -eq $kfd_count ]] || return 1
@@ -767,7 +778,7 @@ resolve_gpu_identity() {
             prompt_manual_gpu_identity "$pci_root" || return 1
         fi
     if [[ "$runfile_all" == true ]]; then
-        [[ "$GPU_DETECTION_SOURCE" == kfd* ]] || { GPU_ARCHES=''; return 64; }
+        case "$GPU_DETECTION_SOURCE" in kfd*|pci|manual) ;; *) GPU_ARCHES=''; return 64 ;; esac
         GPU_RUNFILE_GFX=all
     fi
     fi
@@ -959,6 +970,7 @@ print_install_plan() {
     output+="os=${INSTALL_PLAN[os_description]}"$'\n'
     output+="os_policy=${INSTALL_PLAN[os_key]}"$'\n'
     output+="method=${INSTALL_PLAN[method]}"$'\n'
+    [[ "${INSTALL_PLAN[method]}" != runfile ]] || output+="runfile_gfx=${INSTALL_PLAN[runfile_gfx]}"$'\n'
     output+="artifact=${artifact_csv}"$'\n'
     output+="driver_mode=${INSTALL_PLAN[driver_mode]}"$'\n'
     output+="driver_status=${INSTALL_PLAN[driver_status]}"$'\n'
@@ -1577,32 +1589,110 @@ runfile_layout_is_ready() {
     [[ -x "$install_root/bin/rocminfo" && -x "$install_root/bin/amd-smi" ]]
 }
 
-runfile_installation_is_ready() {
-    local state_path
+read_runfile_installation_marker() {
+    local state_path key value seen_version=false seen_gfx=false seen_url=false
 
     state_path=$(runfile_state_path) || return 1
-    [[ -f "$state_path" ]] && runfile_layout_is_ready
+    [[ -r "$state_path" ]] || return 1
+    RUNFILE_MARKER_VERSION=''
+    RUNFILE_MARKER_GFX=''
+    RUNFILE_MARKER_URL=''
+    while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
+        case "$key" in
+            version) [[ "$seen_version" == false ]] || return 1; RUNFILE_MARKER_VERSION=$value; seen_version=true ;;
+            gfx) [[ "$seen_gfx" == false ]] || return 1; RUNFILE_MARKER_GFX=$value; seen_gfx=true ;;
+            url) [[ "$seen_url" == false ]] || return 1; RUNFILE_MARKER_URL=$value; seen_url=true ;;
+            *) return 1 ;;
+        esac
+    done < "$state_path"
+    [[ "$seen_version" == true && "$seen_gfx" == true && "$seen_url" == true ]] || return 1
+    [[ "$RUNFILE_MARKER_VERSION" == "$ROCM_VERSION" && "$RUNFILE_MARKER_GFX" == all && "$RUNFILE_MARKER_URL" == "$ROCM_RUNFILE_URL" ]]
+}
+
+runfile_installation_is_ready() {
+    read_runfile_installation_marker && runfile_layout_is_ready
+}
+
+all_supported_gfxes() {
+    printf '%s\n' "${!ROCM_714_ARTIFACT_RECORDS[@]}" | LC_ALL=C sort
+}
+
+runfile_reports_all_architectures() {
+    local runfile_path=${1:-} output token gfx detected=''
+
+    [[ $# -eq 1 && -f "$runfile_path" ]] || return 1
+    output=$(capture_cmd bash "$runfile_path" gfx=list-installed) || return $?
+    for token in $output; do
+        if [[ "$token" =~ gfx[[:xdigit:]]+ ]]; then
+            gfx=${BASH_REMATCH[0],,}
+            validate_artifact_gfx "$gfx" || continue
+            detected+="${detected:+$'\n'}${gfx}"
+        fi
+    done
+    [[ -n "$detected" ]] || return 1
+    detected=$(normalize_records "$detected") || return 1
+    [[ "$detected" == "$(all_supported_gfxes)" ]]
 }
 
 mark_runfile_installation() {
-    local state_root=${ROCM_RUNFILE_STATE_ROOT:-/var/lib/rocm-installer} state_path
+    local state_root=${ROCM_RUNFILE_STATE_ROOT:-/var/lib/rocm-installer} state_path temporary
 
     state_path=$(runfile_state_path) || return 1
     install -d -m 0700 "$state_root" || return $?
-    printf 'version=%s\ngfx=all\nurl=%s\n' "$ROCM_VERSION" "$ROCM_RUNFILE_URL" > "$state_path" || return $?
-    chmod 0600 "$state_path"
+    temporary=$(mktemp "${state_root%/}/.runfile-7.14-all.XXXXXX") || return $?
+    if printf 'version=%s\ngfx=all\nurl=%s\n' "$ROCM_VERSION" "$ROCM_RUNFILE_URL" > "$temporary" \
+        && chmod 0600 "$temporary" \
+        && mv -f "$temporary" "$state_path"; then
+        return 0
+    fi
+    rm -f "$temporary"
+    return 1
+}
+
+rollback_runfile_installation() {
+    local runfile_path=${1:-}
+
+    [[ $# -eq 1 && -f "$runfile_path" ]] || return 1
+    run_cmd bash "$runfile_path" uninstall-rocm gfx=all || return $?
+    ! runfile_layout_is_ready
+}
+
+validate_rocm_layout_compatibility() {
+    local intended_method=${1:-} state_path apt_packages legacy_packages
+    local pip_root=${ROCM_PIP_ROOT:-/opt/rocm-${ROCM_VERSION}-venv}
+    local tarball_root=${ROCM_TARBALL_INSTALL_ROOT:-/opt/rocm-${ROCM_VERSION}}
+
+    [[ $# -eq 1 ]] || return 1
+    case "$intended_method" in apt|pip|tarball|runfile) ;; *) return 1 ;; esac
+    state_path=$(runfile_state_path) || return 1
+    if [[ "$intended_method" != runfile ]]; then
+        if [[ -e "$state_path" ]]; then
+            printf '%s installation refused: a Runfile installation is registered. Use --method runfile --gpu-arch all --uninstall first.\n' "$intended_method" >&2
+            return 1
+        fi
+        return 0
+    fi
+    apt_packages=$(rocm_apt_installed_package_candidates) || return $?
+    legacy_packages=$(detect_legacy_rocm_packages) || return $?
+    if [[ -n "$apt_packages" || -n "$legacy_packages" ]]; then
+        printf 'Runfile installation refused: package-manager ROCm packages are installed.\n' >&2
+        return 1
+    fi
+    [[ ! -e "$pip_root" ]] || { printf 'Runfile installation refused: pip layout exists at %s.\n' "$pip_root" >&2; return 1; }
+    [[ ! -e "$tarball_root" ]] || { printf 'Runfile installation refused: tarball layout exists at %s.\n' "$tarball_root" >&2; return 1; }
+    if [[ -e "$state_path" ]]; then
+        runfile_installation_is_ready || { printf '%s\n' 'Runfile registration is stale or incomplete.' >&2; return 1; }
+    elif runfile_layout_is_ready; then
+        printf '%s\n' 'Runfile installation refused: an unregistered Runfile layout already exists.' >&2
+        return 1
+    fi
 }
 
 install_rocm_runfile() {
-    local apt_packages temp_dir runfile_path status
+    local temp_dir runfile_path status
 
     [[ "${INSTALL_PLAN[artifacts]:-}" == "$ROCM_RUNFILE_URL" && "${INSTALL_PLAN[runfile_gfx]:-}" == all ]] || return 1
-    apt_packages=$(rocm_apt_installed_package_candidates) || return $?
-    if [[ -n "$apt_packages" ]]; then
-        printf 'Runfile installation refused: package-manager ROCm packages are installed: %s\n' "${apt_packages//$'\n'/,}" >&2
-        return 1
-    fi
-    runfile_installation_is_ready && return 0
+    validate_rocm_layout_compatibility runfile || return $?
     temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/rocm-runfile.XXXXXX") || return $?
     runfile_path="${temp_dir}/${ROCM_RUNFILE_NAME}"
     run_cmd curl -fL --retry 0 --output "$runfile_path" "$ROCM_RUNFILE_URL" || {
@@ -1610,25 +1700,34 @@ install_rocm_runfile() {
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
     }
+    if runfile_installation_is_ready && runfile_reports_all_architectures "$runfile_path"; then
+        run_cmd rm -rf "$temp_dir"
+        return $?
+    fi
     run_cmd bash "$runfile_path" deps=install rocm gfx=all compo=core,core-dev || {
         status=$?
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
     }
-    runfile_layout_is_ready || {
-        status=$?
+    if ! runfile_layout_is_ready || ! runfile_reports_all_architectures "$runfile_path"; then
+        status=1
+        rollback_runfile_installation "$runfile_path" || status=$?
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
-    }
-    mark_runfile_installation || {
+    fi
+    if mark_runfile_installation; then
+        :
+    else
         status=$?
+        rollback_runfile_installation "$runfile_path" || status=$?
         run_cmd rm -rf "$temp_dir" || return $?
         return "$status"
-    }
+    fi
     run_cmd rm -rf "$temp_dir"
 }
 
 install_rocm() {
+    validate_rocm_layout_compatibility "${INSTALL_PLAN[method]:-${INSTALL_METHOD:-}}" || return $?
     case "${INSTALL_PLAN[method]:-${INSTALL_METHOD:-}}" in
         apt) install_rocm_apt ;;
         pip) install_rocm_pip ;;
@@ -2131,6 +2230,12 @@ rocm_apt_verification_root_exists() {
     [[ -d "$active_root/core-7.14" ]]
 }
 
+cleanup_managed_rocm_environment() {
+    run_cmd rm -f /etc/profile.d/rocm.sh /etc/ld.so.conf.d/rocm.conf /etc/udev/rules.d/70-amdgpu.rules || return $?
+    run_cmd ldconfig || return $?
+    run_cmd udevadm control --reload-rules || return $?
+}
+
 do_uninstall_runfile() {
     local answer state_path temp_dir runfile_path status
 
@@ -2159,18 +2264,28 @@ do_uninstall_runfile() {
         run_cmd rm -rf "$temp_dir" || return $?
         return 1
     }
+    cleanup_managed_rocm_environment || {
+        status=$?
+        run_cmd rm -rf "$temp_dir" || return $?
+        return "$status"
+    }
     run_cmd rm -f "$state_path" || return $?
     run_cmd rm -rf "$temp_dir" || return $?
     printf '%s\n' 'ROCm 7.14.0 Runfile installation removed; AMDGPU driver was left installed.'
 }
 
 do_uninstall() {
-    local output package failure_status=0 command_status
+    local output package failure_status=0 command_status runfile_state
     local -a packages=()
 
     if [[ "${INSTALL_METHOD:-}" == runfile ]]; then
         do_uninstall_runfile
         return $?
+    fi
+    runfile_state=$(runfile_state_path) || return 1
+    if [[ -e "$runfile_state" ]]; then
+        printf 'Package-manager uninstall refused: a Runfile installation is registered. Use: sudo %s --method runfile --gpu-arch all --uninstall\n' "$0" >&2
+        return 1
     fi
 
     if [[ "${NON_INTERACTIVE:-false}" != true ]]; then
@@ -2372,6 +2487,7 @@ parse_args() {
     if [[ "$GPU_ARCHES" == all || "$GPU_ARCHES" == *$'\n'all || "$GPU_ARCHES" == all$'\n'* || "$GPU_ARCHES" == *$'\n'all$'\n'* ]]; then
         [[ "$GPU_ARCHES" == all && "$INSTALL_METHOD" == runfile ]] || return 1
     fi
+    [[ "$INSTALL_METHOD" != runfile || "$GPU_ARCHES" == all ]] || return 1
 }
 
 preflight_error() {
@@ -2463,6 +2579,7 @@ main() {
         preflight_error 'installation plan validation' "check supported OS/kernel/driver/gfx values: os=${OS_ID:-unknown}-${OS_VERSION:-unknown} kernel=${KERNEL_VERSION:-unknown} driver=${DRIVER_MODE:-unknown} gfx=${GPU_ARCHES//$'\n'/,}."
         return "$status"
     }
+    run_stage 'ROCm layout compatibility' validate_rocm_layout_compatibility "${INSTALL_PLAN[method]}" || return $?
     print_install_plan || {
         status=$?
         preflight_error 'installation plan rendering' 'the validated plan could not be written or rendered; check stdout and the output destination.'

@@ -230,6 +230,7 @@ assert_success "four-R9700 identity resolves an explicit Runfile all plan" resol
 assert_eq runfile "${INSTALL_PLAN[method]}" "Runfile plan records its method"
 assert_eq all "${INSTALL_PLAN[runfile_gfx]}" "Runfile plan records gfx=all"
 assert_eq "$ROCM_RUNFILE_URL" "${INSTALL_PLAN[artifacts]}" "Runfile plan pins the official artifact"
+assert_contains "$(print_install_plan)" "runfile_gfx=all" "Runfile confirmation renders the all-architecture payload"
 INSTALL_METHOD=apt
 GPU_RUNFILE_GFX=''
 
