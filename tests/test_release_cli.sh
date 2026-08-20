@@ -54,6 +54,7 @@ assert_eq "false" "$SKIP_SSH" "SSH setup is enabled by default"
 assert_eq "0" "$REBOOT_DELAY" "reboot is immediate by default"
 assert_eq "false" "$PREPARE_KERNEL" "kernel preparation is disabled by default"
 assert_eq "false" "$REBOOT_AFTER_KERNEL" "kernel reboot automation is disabled by default"
+assert_eq "false" "$ALLOW_UNQUALIFIED_KERNEL" "unqualified kernel override is disabled by default"
 
 GPU_ARCH=gfx1151
 GPU_PRODUCT_NAME='AMD Radeon RX 9060 XT'
@@ -99,6 +100,12 @@ parse_succeeds --prepare-kernel --reboot-after-kernel
 assert_eq true "$PREPARE_KERNEL" "kernel preparation can be explicitly enabled"
 assert_eq true "$REBOOT_AFTER_KERNEL" "one-shot kernel reboot can be explicitly enabled"
 assert_fails "kernel reboot automation requires kernel preparation" parse_fails --reboot-after-kernel
+parse_succeeds --allow-unqualified-kernel
+assert_eq true "$ALLOW_UNQUALIFIED_KERNEL" "unqualified kernel override requires an explicit flag"
+assert_fails "unqualified kernel override rejects kernel preparation" parse_fails --allow-unqualified-kernel --prepare-kernel
+assert_fails "unqualified kernel override rejects automatic kernel reboot" parse_fails --allow-unqualified-kernel --prepare-kernel --reboot-after-kernel
+assert_fails "unqualified kernel override rejects verify-only mode" parse_fails --allow-unqualified-kernel --verify-only
+assert_fails "unqualified kernel override rejects uninstall mode" parse_fails --allow-unqualified-kernel --uninstall
 
 parse_succeeds --gpu-arch gfx1151 --gpu-arch gfx1100 --gpu-arch gfx1151
 assert_eq $'gfx1151\ngfx1100\ngfx1151' "$GPU_ARCHES" "repeated GPU architecture overrides append raw records"
@@ -138,6 +145,7 @@ assert_contains "$help_output" "apt, pip, tarball, or runfile" "help lists all f
 assert_contains "$help_output" "may be repeated" "help documents repeated GPU architecture overrides"
 assert_contains "$help_output" "--prepare-kernel" "help documents explicit kernel preparation"
 assert_contains "$help_output" "--reboot-after-kernel" "help documents explicit one-shot kernel reboot"
+assert_contains "$help_output" "--allow-unqualified-kernel" "help documents the unsupported 6.17 Radeon override"
 assert_contains "$help_output" "$ROCM_GPU_LOOKUP_URL" "help prints the official GPU lookup URL"
 assert_contains "$help_output" "gfx=all" "help documents the explicit Runfile all fallback"
 assert_not_contains "$help_output" "graphics workload" "help does not advertise a graphics workload"

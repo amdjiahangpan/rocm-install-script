@@ -138,6 +138,19 @@ run, a successful switch clears the state. If the boot ID changed but the
 kernel still mismatches, the installer reports manual recovery and never
 reboots again.
 
+`--allow-unqualified-kernel` is a narrow experimental escape hatch for exactly
+Ubuntu 24.04, Radeon AI PRO R9700 (`gfx1201`), AMDGPU DKMS, and a running
+`6.17.*-generic` kernel. It keeps that running kernel, marks the plan
+`support_status=unqualified`, and prints an `UNQUALIFIED` warning. The official
+[ROCm 7.14.0 compatibility matrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html)
+lists Ubuntu 24.04.4 with its 6.8 GA kernel for the Radeon AI PRO R9000
+`gfx1201` series, not 6.17. This option does not claim or create support. It
+cannot be combined with kernel mutation, verification-only, or uninstall mode.
+
+The override also requires positive physical GPU detection and every counted
+display device to appear in bound, unmapped PCI evidence as R9700 device ID
+`1002:7551`. A product name or `--gpu-arch gfx1201` alone cannot enable it.
+
 Before changing GRUB, the installer snapshots existing `next_entry` and
 `prev_saved_entry` values. A failed one-shot setup restores and verifies those
 values, so an unrelated user-selected boot entry is not lost.
@@ -278,6 +291,7 @@ All four methods use the same host, kernel, driver, and verification policy.
 | `--root-password PASS` | Set the root password during SSH setup. |
 | `--prepare-kernel` | Explicitly install the reviewed kernel metapackage when the running kernel is not ready. |
 | `--reboot-after-kernel` | With `--prepare-kernel`, select and verify one GRUB boot attempt, persist pending state, and reboot once. |
+| `--allow-unqualified-kernel` | Keep a running `6.17.*-generic` kernel only for the unsupported Ubuntu 24.04 + R9700 (`gfx1201`) + DKMS experiment path. |
 | `--skip-reboot` | Suppress post-driver/group/udev reboot and the final command after explicit kernel boot selection. |
 | `--reboot-delay MIN` | Delay an allowed reboot by 0 to 120 minutes. `0` means immediate. |
 | `--verify-only` | Verify an existing installation and make no install changes. |
@@ -288,8 +302,9 @@ All four methods use the same host, kernel, driver, and verification policy.
 
 `--verify-only` and `--uninstall` cannot be combined. Kernel preparation cannot
 be combined with either mode, and `--reboot-after-kernel` requires
-`--prepare-kernel`. Password values containing a newline or carriage return are
-rejected.
+`--prepare-kernel`. `--allow-unqualified-kernel` cannot be combined with either
+kernel mutation flag, `--verify-only`, or `--uninstall`. Password values
+containing a newline or carriage return are rejected.
 
 ## Examples
 
@@ -321,6 +336,7 @@ driver_mode=dkms
 driver_status=ready
 action=rocm:apt
 kernel_status=ready
+support_status=qualified
 kernel_target=6.8.*-generic
 kernel_package=linux-generic
 ```
@@ -334,6 +350,18 @@ gpu_count=4
 gpu_class=radeon
 gpu_source=kfd+unmapped-pci
 ```
+
+To experiment on the existing Ubuntu 24.04 R9700 host running
+`6.17.*-generic`, explicitly accept the unqualified combination:
+
+```bash
+sudo bash ./rocm-install.sh --allow-unqualified-kernel
+```
+
+The plan must show `kernel_status=ready-unqualified`,
+`support_status=unqualified`, and the `UNQUALIFIED` warning before confirmation.
+Without this flag, the same host remains blocked on the reviewed
+`6.8.*-generic` target.
 
 If the detected/input architecture is uncertain or multiple different GFX
 targets are present, use the explicit official fallback:
@@ -354,8 +382,9 @@ that rule.
 
 The public plan labels include `gfx`, `gpu_count`, `gpu_class`, `gpu_source`,
 `lookup_url`, `fallback_recommended`, `os`, `os_policy`, `method`, `artifact`,
-`driver_mode`, `driver_status`, `action`, `kernel_status`, `kernel_target`, and
-`kernel_package`, plus optional `unmapped_pci` and informational `product_name`.
+`driver_mode`, `driver_status`, `action`, `kernel_status`, `support_status`,
+`kernel_target`, and `kernel_package`, plus optional `unmapped_pci` and
+informational `product_name`.
 Actions and collection values are rendered deterministically.
 
 Inspect a kernel mismatch without changing the host:
@@ -517,6 +546,7 @@ id -nG "$USER"
 ## Resources
 
 - [ROCm installation documentation](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/)
+- [ROCm 7.14.0 compatibility matrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html)
 - [AMD GPU driver repository](https://repo.radeon.com/amdgpu/)
 - [ROCm on GitHub](https://github.com/ROCm)
 
