@@ -34,13 +34,13 @@ run_invalid_option() {
     return "$status"
 }
 
-assert_eq "10.0.0" "$ROCM_VERSION" "release is fixed at ROCm 10.0.0"
-assert_eq "10.0" "$ROCM_SERIES" "package series is fixed at 10.0"
-assert_eq "31.50" "$AMDGPU_RELEASE" "AMDGPU migration release is fixed at 31.50"
+assert_eq "10.1.0" "$ROCM_VERSION" "release is fixed at ROCm 10.1.0"
+assert_eq "10.1" "$ROCM_SERIES" "package series is fixed at 10.1"
+assert_eq "31.60" "$AMDGPU_RELEASE" "AMDGPU migration release is fixed at 31.60"
 assert_eq "https://stable.repo.amd.com/rocm/core/packages" "$ROCM_PACKAGES_ROOT" "APT package root is fixed"
 assert_eq "https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile" "$ROCM_GPU_LOOKUP_URL" "official GPU lookup URL is fixed"
 assert_eq "https://github.com/amdjiahangpan/hello-rocm/blob/master/docs/zh/00-environment/rocm-gpu-architecture-table.md" "$ROCM_GPU_LOOKUP_ZH_URL" "Chinese GPU lookup URL is fixed"
-assert_eq "https://repo.radeon.com/rocm/installer/rocm-runfile-installer/rocm-rel-10.0/rocm-installer-10.0.0-4.run" "$ROCM_RUNFILE_URL" "official ROCm 10 Runfile URL is fixed"
+assert_eq "https://stable.repo.amd.com/rocm/core/linux-installers/rocm-installer-10.1.0-5.run" "$ROCM_RUNFILE_URL" "official ROCm 10.1 Runfile URL is fixed"
 
 reset_defaults
 assert_eq "compute" "$WORKLOAD" "compute is the only default workload"
@@ -98,8 +98,8 @@ assert_eq $'gfx1151\ngfx1100\ngfx1151' "$GPU_ARCHES" "repeated GPU architecture 
 assert_fails "GPU architecture requires a value" parse_fails --gpu-arch
 assert_fails "GPU architecture rejects an empty value" parse_fails --gpu-arch ""
 
-assert_eq "ubuntu-24.04.4" "$(normalize_os_key ubuntu 24.04)" "Ubuntu 24.04 resolves to the supported point release"
-assert_eq "ubuntu-26.04" "$(normalize_os_key ubuntu 26.04)" "Ubuntu 26.04 is supported"
+assert_eq "ubuntu-24.04.5" "$(normalize_os_key ubuntu 24.04)" "Ubuntu 24.04 resolves to the supported point release"
+assert_eq "ubuntu-26.04.1" "$(normalize_os_key ubuntu 26.04)" "Ubuntu 26.04 is supported"
 assert_fails "Ubuntu 22.04 is rejected" normalize_os_key ubuntu 22.04
 assert_fails "Debian is rejected" normalize_os_key debian 13
 assert_fails "RHEL is rejected" normalize_os_key rhel 10.2
@@ -126,7 +126,7 @@ assert_contains "$ENTRYPOINT_STDERR" "argument parsing" "direct launcher identif
 assert_contains "$ENTRYPOINT_STDERR" "--help" "direct launcher tells users how to correct invalid options on stderr"
 
 help_output=$(show_help)
-assert_contains "$help_output" "ROCm 10.0.0" "help names the fixed release"
+assert_contains "$help_output" "ROCm 10.1.0" "help names the fixed release"
 assert_contains "$help_output" "apt or runfile" "help lists only supported methods"
 assert_contains "$help_output" "may be repeated" "help documents repeated GPU architecture overrides"
 assert_not_contains "$help_output" "--prepare-kernel" "help omits kernel preparation"

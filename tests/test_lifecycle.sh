@@ -10,12 +10,12 @@ CAPTURED_COMMANDS_FILE=""
 MOCK_FAIL_FRAGMENT=""
 MOCK_GROUPS_PRESENT=false
 MOCK_ROCMINFO_OUTPUT=$'  Name:                    gfx1151\n'
-MOCK_AMD_SMI_OUTPUT="ROCm version: 10.0.0"
+MOCK_AMD_SMI_OUTPUT="ROCm version: 10.1.0"
 MOCK_INSTALLED_ROCM_PACKAGES=""
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=""
 MOCK_KERNEL_METAPACKAGE_INSTALLED=""
-MOCK_KERNEL_CANDIDATE='6.17.0.23.24.04'
-MOCK_KERNEL_SIMULATION_OUTPUT='Inst linux-generic-hwe-24.04 [6.17.0.23.24.04]'
+MOCK_KERNEL_CANDIDATE='7.0.0.28.24.04'
+MOCK_KERNEL_SIMULATION_OUTPUT='Inst linux-generic-hwe-24.04 [7.0.0.28.24.04]'
 MOCK_KERNEL_DF_OUTPUT=$'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mock 1048576 1 1048575 1% /boot'
 
 lifecycle_run_cmd() {
@@ -65,29 +65,29 @@ reset_lifecycle_state() {
     MOCK_FAIL_FRAGMENT=""
     MOCK_GROUPS_PRESENT=false
     MOCK_ROCMINFO_OUTPUT=$'  Name:                    gfx1151\n'
-    MOCK_AMD_SMI_OUTPUT="ROCm version: 10.0.0"
+    MOCK_AMD_SMI_OUTPUT="ROCm version: 10.1.0"
     MOCK_INSTALLED_ROCM_PACKAGES=""
     MOCK_KERNEL_METAPACKAGE_INSTALLED=""
-    MOCK_KERNEL_CANDIDATE='6.17.0.23.24.04'
-    MOCK_KERNEL_SIMULATION_OUTPUT='Inst linux-generic-hwe-24.04 [6.17.0.23.24.04]'
+    MOCK_KERNEL_CANDIDATE='7.0.0.28.24.04'
+    MOCK_KERNEL_SIMULATION_OUTPUT='Inst linux-generic-hwe-24.04 [7.0.0.28.24.04]'
     MOCK_KERNEL_DF_OUTPUT=$'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mock 1048576 1 1048575 1% /boot'
     REBOOT_REQUIRED=false
     OS_ID=ubuntu
     OS_VERSION=24.04
     ARCH=x86_64
-    KERNEL_VERSION=6.17.0-23-generic
+    KERNEL_VERSION=7.0.0-28-generic
     INSTALL_METHOD=apt
     GPU_ARCHES=gfx1151
     GPU_PRODUCT_NAMES='AMD Radeon 8060S Graphics'
     INSTALL_PLAN=(
         [gfxes]=gfx1151
-        [os_key]=ubuntu-24.04.4
+        [os_key]=ubuntu-24.04.5
         [repo_slug]=ubuntu2404
         [method]=apt
-        [artifacts]=amdrocm-core-sdk10.0-gfx1151
+        [artifacts]=amdrocm-core-sdk10.1-gfx1151
         [driver_mode]=inbox
         [kernel_status]=ready
-        [kernel_target]='6.17.*-generic'
+        [kernel_target]='7.0.*-generic'
         [kernel_package]=linux-generic-hwe-24.04
         [product_names]="$GPU_PRODUCT_NAMES"
     )
@@ -112,7 +112,7 @@ os_release_fixture="${TEST_TEMP_ROOT}/os-release"
 printf 'ID=ubuntu\nVERSION_ID="24.04"\nPRETTY_NAME="Ubuntu 24.04.2 LTS"\n' > "$os_release_fixture"
 OS_RELEASE_FILE=$os_release_fixture
 SYSTEM_ARCH_OVERRIDE=x86_64
-SYSTEM_KERNEL_OVERRIDE=6.17.0-23-generic
+SYSTEM_KERNEL_OVERRIDE=7.0.0-28-generic
 assert_success "Ubuntu 24.04 x86_64 is detected from os-release" detect_system
 assert_eq ubuntu "$OS_ID" "system detection records Ubuntu"
 assert_eq 24.04 "$OS_VERSION" "system detection records Ubuntu 24.04"
@@ -179,7 +179,7 @@ assert_contains "$RECORDED_COMMANDS" "usermod -aG video\,render installer-test-u
 assert_contains "$MANAGED_FILES" "/etc/udev/rules.d/70-amdgpu.rules" "GPU udev access is managed"
 assert_contains "$MANAGED_FILES" "/etc/ld.so.conf.d/rocm.conf" "APT configures the ROCm linker path"
 assert_contains "$MANAGED_FILES" "/etc/profile.d/rocm.sh" "APT configures a system-wide profile"
-assert_contains "$MANAGED_FILES" "/opt/rocm/core-10.0" "APT environment uses the current ROCm package root"
+assert_contains "$MANAGED_FILES" "/opt/rocm/core-10.1" "APT environment uses the current ROCm package root"
 assert_not_contains "$MANAGED_FILES" "/opt/rocm/bin" "APT environment does not use the stale active ROCm path"
 assert_not_contains "$MANAGED_FILES" ".bashrc" "no user bashrc is edited"
 assert_eq true "$REBOOT_REQUIRED" "group and udev changes require a reboot"
@@ -200,7 +200,7 @@ assert_fails "rocminfo agent extraction requires exactly one output string" extr
 reset_lifecycle_state
 verify_output=$(verify_installation)
 assert_contains "$verify_output" "requested gfx agents" "single requested gfx verification reports target-aware success"
-assert_eq $'/opt/rocm/core-10.0/bin/rocminfo\n/opt/rocm/core-10.0/bin/amd-smi version' "$(<"$CAPTURED_COMMANDS_FILE")" "APT verification captures only the current package-root binaries"
+assert_eq $'/opt/rocm/core-10.1/bin/rocminfo\n/opt/rocm/core-10.1/bin/amd-smi version' "$(<"$CAPTURED_COMMANDS_FILE")" "APT verification captures only the current package-root binaries"
 
 reset_lifecycle_state
 INSTALL_PLAN[gfxes]=$'gfx1151\ngfx1201'
@@ -263,7 +263,7 @@ MOCK_AMD_SMI_OUTPUT="ROCm version: 9.9.0"
 assert_fails "verification rejects a different ROCm release" verify_installation
 
 reset_lifecycle_state
-MOCK_AMD_SMI_OUTPUT="ROCm version: 10.0.0.1"
+MOCK_AMD_SMI_OUTPUT="ROCm version: 10.1.0.1"
 assert_fails "verification rejects a version with an extra release component" verify_installation
 
 is_expected_rocm_link() { return 0; }
@@ -271,31 +271,31 @@ reset_lifecycle_state
 NON_INTERACTIVE=true
 assert_success "package-manager uninstall without installed candidates still cleans managed files" do_uninstall
 assert_not_contains "$RECORDED_COMMANDS" "apt-get purge" "no installed APT candidates means no purge command"
-assert_contains "$RECORDED_COMMANDS" "rm -rf /opt/rocm/core-10.0 /opt/rocm-10.0.0" "uninstall removes the current managed roots"
+assert_contains "$RECORDED_COMMANDS" "rm -rf /opt/rocm/core-10.1 /opt/rocm-10.1.0" "uninstall removes the current managed roots"
 assert_contains "$RECORDED_COMMANDS" "/etc/profile.d/rocm.sh" "uninstall removes fixed configuration"
 
 reset_lifecycle_state
 NON_INTERACTIVE=true
-MOCK_INSTALLED_ROCM_PACKAGES="amdrocm-core-sdk10.0-gfx1151 rocm"
+MOCK_INSTALLED_ROCM_PACKAGES="amdrocm-core-sdk10.1-gfx1151 rocm"
 assert_success "uninstall purges only the exact installed ROCm APT candidate" do_uninstall
-assert_eq "apt-get purge --yes amdrocm-core-sdk10.0-gfx1151" "${RECORDED_COMMANDS%%$'\n'*}" "uninstall purges exactly the installed architecture-specific package"
-assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk10.0-gfx1201" "uninstall does not purge an uninstalled ROCm candidate"
+assert_eq "apt-get purge --yes amdrocm-core-sdk10.1-gfx1151" "${RECORDED_COMMANDS%%$'\n'*}" "uninstall purges exactly the installed architecture-specific package"
+assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk10.1-gfx1201" "uninstall does not purge an uninstalled ROCm candidate"
 assert_not_contains "$RECORDED_COMMANDS" "apt-get purge --yes rocm" "uninstall leaves legacy packages outside the current release candidates"
 
 reset_lifecycle_state
 NON_INTERACTIVE=true
-MOCK_INSTALLED_ROCM_PACKAGES="amdrocm-core-sdk10.0-gfx1151"
-MOCK_FAIL_FRAGMENT="apt-get purge --yes amdrocm-core-sdk10.0-gfx1151"
+MOCK_INSTALLED_ROCM_PACKAGES="amdrocm-core-sdk10.1-gfx1151"
+MOCK_FAIL_FRAGMENT="apt-get purge --yes amdrocm-core-sdk10.1-gfx1151"
 assert_status 23 "installed package purge failure is returned after independent cleanup" do_uninstall
-assert_contains "$RECORDED_COMMANDS" "rm -rf /opt/rocm/core-10.0 /opt/rocm-10.0.0" "purge failure still removes fixed installation roots"
+assert_contains "$RECORDED_COMMANDS" "rm -rf /opt/rocm/core-10.1 /opt/rocm-10.1.0" "purge failure still removes fixed installation roots"
 assert_contains "$RECORDED_COMMANDS" "/etc/ld.so.conf.d/rocm.conf" "purge failure still removes fixed configuration"
 assert_contains "$RECORDED_COMMANDS" "udevadm control --reload-rules" "purge failure still reloads udev rules"
 
 MOCK_DKMS_PACKAGE_VERSION=""
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=""
 MOCK_DKMS_STATUS=""
-REAL_DKMS_PACKAGE_VERSION='1:6.19.18.31500000-2364437.24.04'
-REAL_DKMS_FIRMWARE_VERSION='1:31.50.0.0.31500000-2364437.24.04'
+REAL_DKMS_PACKAGE_VERSION='1:7.1.9.31600000-2407772.24.04'
+REAL_DKMS_FIRMWARE_VERSION='1:31.60.0.0.31600000-2407772.24.04'
 MOCK_KERNEL_VERSION=7.0.0-generic
 MOCK_OS_VERSION=26.04
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
@@ -363,13 +363,13 @@ lifecycle_run_cmd() {
     if [[ "$1 ${2:-} ${3:-} ${4:-}" == 'apt-get install --yes amdgpu-dkms' ]]; then
         MOCK_DKMS_PACKAGE_VERSION=$REAL_DKMS_PACKAGE_VERSION
         MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$REAL_DKMS_FIRMWARE_VERSION
-        MOCK_DKMS_STATUS="amdgpu/6.19.18-2364437.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
+        MOCK_DKMS_STATUS="amdgpu/7.1.9-2407772.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
         MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
     fi
     if [[ "$1 ${2:-} ${3:-} ${4:-} ${5:-} ${6:-}" == 'apt-get --yes --no-remove --install-recommends install linux-generic-hwe-24.04' ]]; then
         MOCK_KERNEL_METAPACKAGE_INSTALLED=linux-generic-hwe-24.04
         mkdir -p "$KERNEL_BOOT_DIR"
-        printf 'kernel image\n' > "${KERNEL_BOOT_DIR}/vmlinuz-6.17.0-23-generic"
+        printf 'kernel image\n' > "${KERNEL_BOOT_DIR}/vmlinuz-7.0.0-28-generic"
     fi
 }
 
@@ -396,19 +396,19 @@ recorded_command_count() {
 MOCK_DKMS_PACKAGE_VERSION=""
 MOCK_DKMS_STATUS=""
 MOCK_KERNEL_VERSION=7.0.0-generic
-MOCK_INSTALLED_LEGACY_ROCM_PACKAGES="rocm-dev rocm libamdhip64-dev amdrocm-core-sdk10.0-gfx1151"
+MOCK_INSTALLED_LEGACY_ROCM_PACKAGES="rocm-dev rocm libamdhip64-dev amdrocm-core-sdk10.1-gfx1151"
 assert_success "mocked inbox APT lifecycle runs through the real steps" run_mocked_main apt --gpu-arch gfx1151
 assert_contains "$RECORDED_COMMANDS" "apt-get purge --yes libamdhip64-dev rocm rocm-dev" "main flow purges ROCm meta packages and the conflicting distro HIP headers"
 assert_not_contains "$RECORDED_COMMANDS" "apt-get purge --yes amdrocm" "main flow keeps amdrocm packages out of legacy migration purges"
-assert_command_before "apt-get purge --yes libamdhip64-dev rocm rocm-dev" "apt-get install --yes amdrocm-core-sdk10.0-gfx1151" "$RECORDED_COMMANDS" "main flow purges legacy ROCm before installing the current package"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk10.0-gfx1151" "main flow installs the architecture-specific APT package"
+assert_command_before "apt-get purge --yes libamdhip64-dev rocm rocm-dev" "apt-get install --yes amdrocm-core-sdk10.1-gfx1151" "$RECORDED_COMMANDS" "main flow purges legacy ROCm before installing the current package"
+assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk10.1-gfx1151" "main flow installs the architecture-specific APT package"
 assert_not_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "auto driver mode keeps the inbox driver"
 
 multi_gfxes=$'gfx1200\ngfx1201'
-multi_packages=$'amdrocm-core-sdk10.0-gfx1200\namdrocm-core-sdk10.0-gfx1201'
+multi_packages=$'amdrocm-core-sdk10.1-gfx1200\namdrocm-core-sdk10.1-gfx1201'
 MOCK_DKMS_PACKAGE_VERSION=$REAL_DKMS_PACKAGE_VERSION
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$REAL_DKMS_FIRMWARE_VERSION
-MOCK_DKMS_STATUS="amdgpu/6.19.18-2364437.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
+MOCK_DKMS_STATUS="amdgpu/7.1.9-2407772.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=""
 MOCK_FAIL_FRAGMENT=""
@@ -416,8 +416,8 @@ assert_success "mocked multi-GFX APT lifecycle runs through the real steps" run_
 assert_eq "$multi_gfxes" "$GPU_ARCHES" "duplicate explicit GPU architectures normalize before the APT plan"
 assert_eq "$multi_gfxes" "${INSTALL_PLAN[gfxes]}" "multi-GFX APT plan retains both normalized architectures"
 assert_eq "$multi_packages" "${INSTALL_PLAN[artifacts]}" "multi-GFX APT plan contains one SDK package per architecture"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk10.0-gfx1200 amdrocm-core-sdk10.0-gfx1201" "multi-GFX main installs both SDK packages in one APT transaction"
-assert_eq "1" "$(recorded_command_count "apt-get install --yes amdrocm-core-sdk10.0" "$RECORDED_COMMANDS")" "multi-GFX main performs one ROCm SDK APT transaction"
+assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk10.1-gfx1200 amdrocm-core-sdk10.1-gfx1201" "multi-GFX main installs both SDK packages in one APT transaction"
+assert_eq "1" "$(recorded_command_count "apt-get install --yes amdrocm-core-sdk10.1" "$RECORDED_COMMANDS")" "multi-GFX main performs one ROCm SDK APT transaction"
 MOCK_DKMS_PACKAGE_VERSION=''
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
 MOCK_DKMS_STATUS=''
@@ -443,8 +443,8 @@ MOCK_DKMS_STATUS='amdgpu/31.30.1, 7.0.0, x86_64: installed'
 MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=true
 assert_status 24 "mocked DKMS APT lifecycle stops after migrating an old driver" run_mocked_main apt --gpu-arch gfx1201 --driver-mode dkms --dkms-cleanup always
 assert_contains "$RECORDED_COMMANDS" "dpkg --purge amdgpu-dkms amdgpu-dkms-firmware" "DKMS main flow purges the exact old driver packages"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "DKMS main flow installs AMDGPU 31.50"
-assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk10.0-gfx1201" "driver activation boundary prevents ROCm installation"
+assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "DKMS main flow installs AMDGPU 31.60"
+assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk10.1-gfx1201" "driver activation boundary prevents ROCm installation"
 
 MOCK_DKMS_PACKAGE_VERSION=31.30.1
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
@@ -453,7 +453,7 @@ MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=true
 MOCK_FAIL_FRAGMENT="dpkg --purge amdgpu-dkms"
 assert_status 23 "failed DKMS purge stops the lifecycle before prerequisite APT work" run_mocked_main apt --gpu-arch gfx1201 --driver-mode dkms --dkms-cleanup always
 assert_not_contains "$RECORDED_COMMANDS" "apt-get update" "failed driver migration does not start prerequisite APT work"
-assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk10.0-gfx1201" "failed driver migration does not install ROCm"
+assert_not_contains "$RECORDED_COMMANDS" "amdrocm-core-sdk10.1-gfx1201" "failed driver migration does not install ROCm"
 
 MOCK_DKMS_PACKAGE_VERSION=""
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=""
@@ -462,14 +462,14 @@ MOCK_REQUIRE_DRIVER_MIGRATION_BEFORE_APT=false
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES="rocm"
 MOCK_FAIL_FRAGMENT="apt-get purge --yes rocm"
 assert_status 23 "failed legacy ROCm purge stops the lifecycle before current package install" run_mocked_main apt --gpu-arch gfx1151
-assert_not_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk10.0-gfx1151" "failed legacy migration does not install the current ROCm package"
+assert_not_contains "$RECORDED_COMMANDS" "apt-get install --yes amdrocm-core-sdk10.1-gfx1151" "failed legacy migration does not install the current ROCm package"
 assert_not_contains "$MANAGED_FILES" "/etc/profile.d/rocm.sh" "failed legacy migration does not configure the ROCm environment"
 
 MOCK_INSTALLED_LEGACY_ROCM_PACKAGES=""
 MOCK_FAIL_FRAGMENT=""
 MOCK_DKMS_PACKAGE_VERSION=$REAL_DKMS_PACKAGE_VERSION
 MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$REAL_DKMS_FIRMWARE_VERSION
-MOCK_DKMS_STATUS="amdgpu/6.19.18-2364437.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
+MOCK_DKMS_STATUS="amdgpu/7.1.9-2407772.24.04, ${MOCK_KERNEL_VERSION}, x86_64: installed"
 
 MOCK_OS_VERSION=24.04
 MOCK_KERNEL_VERSION=6.8.0-generic
@@ -509,7 +509,7 @@ assert_success "verify-only resolves every repeated explicit GPU override withou
 assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "verify-only normalizes the complete explicit GPU collection"
 assert_eq "0" "${#INSTALL_PLAN[@]}" "verify-only keeps install plan state empty"
 assert_eq "" "$RECORDED_COMMANDS$MANAGED_FILES$PASSWORD_UPDATES" "verify-only runs no install or configuration mutation commands"
-assert_eq $'/opt/rocm/core-10.0/bin/rocminfo\n/opt/rocm/core-10.0/bin/amd-smi version' "$(<"$CAPTURED_COMMANDS_FILE")" "verify-only captures only the selected method verification binaries"
+assert_eq $'/opt/rocm/core-10.1/bin/rocminfo\n/opt/rocm/core-10.1/bin/amd-smi version' "$(<"$CAPTURED_COMMANDS_FILE")" "verify-only captures only the selected method verification binaries"
 unset GPU_DETECTION_DRM_ROOT
 
 reset_lifecycle_state
@@ -521,7 +521,7 @@ assert_success "verify-only automatically resolves every heterogeneous KFD GPU w
 assert_eq $'gfx1151\ngfx1201' "$GPU_ARCHES" "automatic verify-only resolves the complete KFD GPU collection"
 assert_eq "0" "${#INSTALL_PLAN[@]}" "automatic verify-only keeps install plan state empty"
 assert_eq "" "$RECORDED_COMMANDS$MANAGED_FILES$PASSWORD_UPDATES" "automatic verify-only runs no install or configuration mutation commands"
-assert_eq $'/opt/rocm/core-10.0/bin/rocminfo\n/opt/rocm/core-10.0/bin/amd-smi version' "$(<"$CAPTURED_COMMANDS_FILE")" "automatic verify-only captures only verification binaries"
+assert_eq $'/opt/rocm/core-10.1/bin/rocminfo\n/opt/rocm/core-10.1/bin/amd-smi version' "$(<"$CAPTURED_COMMANDS_FILE")" "automatic verify-only captures only verification binaries"
 unset GPU_DETECTION_KFD_ROOT GPU_DETECTION_DRM_ROOT
 
 MOCK_OS_VERSION=26.04

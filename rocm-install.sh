@@ -5,20 +5,20 @@ if [[ "${ROCM_INSTALL_LIBRARY_MODE:-}" != 1 ]]; then
     set -euo pipefail
 fi
 
-SCRIPT_VERSION=4.0.0
-ROCM_VERSION=10.0.0
-ROCM_SERIES=10.0
-AMDGPU_RELEASE=31.50
-AMDGPU_BUILD_ID=31500000
+SCRIPT_VERSION=4.1.0
+ROCM_VERSION=10.1.0
+ROCM_SERIES=10.1
+AMDGPU_RELEASE=31.60
+AMDGPU_BUILD_ID=31600000
 ROCM_PACKAGES_ROOT=https://stable.repo.amd.com/rocm/core/packages
 ROCM_GPG_KEY_URL=https://stable.repo.amd.com/rocm/gpg/packages.gpg
 ROCM_GPU_LOOKUP_URL='https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=24.04&i=runfile'
 ROCM_GPU_LOOKUP_ZH_URL='https://github.com/amdjiahangpan/hello-rocm/blob/master/docs/zh/00-environment/rocm-gpu-architecture-table.md'
-ROCM_RUNFILE_NAME=rocm-installer-10.0.0-4.run
-ROCM_RUNFILE_URL="https://repo.radeon.com/rocm/installer/rocm-runfile-installer/rocm-rel-10.0/${ROCM_RUNFILE_NAME}"
+ROCM_RUNFILE_NAME=rocm-installer-10.1.0-5.run
+ROCM_RUNFILE_URL="https://stable.repo.amd.com/rocm/core/linux-installers/${ROCM_RUNFILE_NAME}"
 AMDGPU_REPOSITORY=https://repo.radeon.com/amdgpu/${AMDGPU_RELEASE}/ubuntu
 AMDGPU_GPG_KEY_URL=https://repo.radeon.com/rocm/rocm.gpg.key
-SUPPORTED_OS_KEYS=ubuntu-24.04.4,ubuntu-26.04
+SUPPORTED_OS_KEYS=ubuntu-24.04.5,ubuntu-26.04.1
 R9700_PCI_ID=1002:7551
 EXIT_KERNEL_ACTION_REQUIRED=20
 EXIT_DRIVER_RUNTIME_FAILED=23
@@ -58,20 +58,20 @@ gfx1152|ryzen
 gfx1153|ryzen
 gfx1103|ryzen'
 
-declare -A ROCM_100_ARTIFACT_RECORDS=()
-declare -A ROCM_100_OS_RECORDS=(
-    [ubuntu-24.04.4]='apt|ubuntu2404'
-    [ubuntu-26.04]='apt|ubuntu2604'
+declare -A ROCM_101_ARTIFACT_RECORDS=()
+declare -A ROCM_101_OS_RECORDS=(
+    [ubuntu-24.04.5]='apt|ubuntu2404'
+    [ubuntu-26.04.1]='apt|ubuntu2604'
 )
 declare -A INSTALL_PLAN=()
 
 initialize_tables() {
     local gfx
 
-    ROCM_100_ARTIFACT_RECORDS=()
+    ROCM_101_ARTIFACT_RECORDS=()
     while IFS= read -r gfx || [[ -n "$gfx" ]]; do
         [[ -n "$gfx" ]] || continue
-        ROCM_100_ARTIFACT_RECORDS["$gfx"]=1
+        ROCM_101_ARTIFACT_RECORDS["$gfx"]=1
     done <<< "$ARTIFACT_DATA"
 }
 
@@ -110,8 +110,8 @@ reset_defaults
 normalize_os_key() {
     [[ $# -eq 2 ]] || return 1
     case "$1|$2" in
-        ubuntu\|24.04|ubuntu\|24.04.4) printf '%s\n' ubuntu-24.04.4 ;;
-        ubuntu\|26.04) printf '%s\n' ubuntu-26.04 ;;
+        ubuntu\|24.04|ubuntu\|24.04.5) printf '%s\n' ubuntu-24.04.5 ;;
+        ubuntu\|26.04|ubuntu\|26.04.1) printf '%s\n' ubuntu-26.04.1 ;;
         *) return 1 ;;
     esac
 }
@@ -119,14 +119,14 @@ normalize_os_key() {
 resolve_os_record() {
     local os_key=${1:-}
 
-    [[ $# -eq 1 && -n ${ROCM_100_OS_RECORDS[$os_key]+x} ]] || return 1
-    printf '%s\n' "${ROCM_100_OS_RECORDS[$os_key]}"
+    [[ $# -eq 1 && -n ${ROCM_101_OS_RECORDS[$os_key]+x} ]] || return 1
+    printf '%s\n' "${ROCM_101_OS_RECORDS[$os_key]}"
 }
 
 validate_artifact_gfx() {
     local gfx=${1:-}
 
-    [[ $# -eq 1 && -n ${ROCM_100_ARTIFACT_RECORDS[$gfx]+x} ]] || return 1
+    [[ $# -eq 1 && -n ${ROCM_101_ARTIFACT_RECORDS[$gfx]+x} ]] || return 1
 }
 
 normalize_records() {
@@ -218,37 +218,22 @@ is_ryzen_scoped_gfx() {
 }
 
 kernel_policy_for() {
-    local driver_mode=${1:-} os_key=${2:-} gfxes=${3:-} normalized_gfxes gfx
-    local has_ryzen_gfx=false has_non_ryzen_gfx=false
+    local driver_mode=${1:-} os_key=${2:-} gfxes=${3:-} normalized_gfxes gpu_classes
 
     [[ $# -eq 3 ]] || return 1
     normalized_gfxes=$(normalize_gfxes "$gfxes") || return 1
     [[ "$gfxes" == "$normalized_gfxes" ]] || return 1
-    while IFS= read -r gfx || [[ -n "$gfx" ]]; do
-        if is_ryzen_scoped_gfx "$gfx"; then
-            has_ryzen_gfx=true
-        else
-            has_non_ryzen_gfx=true
-        fi
-    done <<< "$normalized_gfxes"
+    gpu_classes=$(resolve_gpu_classes "$normalized_gfxes") || return 1
 
-    case "$os_key" in
-        ubuntu-24.04.4)
-            if [[ "$has_ryzen_gfx" == true ]]; then
-                [[ "$has_non_ryzen_gfx" == false && "$driver_mode" == inbox ]] || return 1
-                printf '%s\n' '6.17.*-generic|linux-generic-hwe-24.04'
-            else
-                case "$driver_mode" in
-                    inbox|dkms) printf '%s\n' '6.8.*-generic|linux-generic' ;;
-                    *) return 1 ;;
-                esac
-            fi
+    case "$os_key|$gpu_classes|$driver_mode" in
+        ubuntu-24.04.5\|ryzen\|inbox|ubuntu-24.04.5\|radeon\|inbox|ubuntu-24.04.5\|radeon\|dkms)
+            printf '%s\n' '7.0.*-generic|linux-generic-hwe-24.04'
             ;;
-        ubuntu-26.04)
-            case "$driver_mode" in
-                inbox|dkms) printf '%s\n' '7.0.*-generic|linux-generic-7.0' ;;
-                *) return 1 ;;
-            esac
+        ubuntu-24.04.5\|instinct\|inbox|ubuntu-24.04.5\|instinct\|dkms)
+            printf '%s\n' '6.8.*-generic|linux-generic'
+            ;;
+        ubuntu-26.04.1\|*\|inbox|ubuntu-26.04.1\|*\|dkms)
+            printf '%s\n' '7.0.*-generic|linux-generic-7.0'
             ;;
         *) return 1 ;;
     esac
@@ -259,7 +244,6 @@ kernel_release_matches_target() {
 
     [[ $# -eq 2 ]] || return 1
     case "$kernel_target" in
-        '6.17.*-generic') [[ "$kernel_release" =~ ^6\.17\.[0-9]+(-[[:alnum:].+_]+)*-generic$ ]] ;;
         '6.8.*-generic') [[ "$kernel_release" =~ ^6\.8\.[0-9]+(-[[:alnum:].+_]+)*-generic$ ]] ;;
         '7.0.*-generic') [[ "$kernel_release" =~ ^7\.0\.[0-9]+(-[[:alnum:].+_]+)*-generic$ ]] ;;
         *) return 1 ;;
@@ -288,10 +272,10 @@ resolve_driver_mode() {
     [[ "$normalized_classes" == "$expected_classes" ]] || return 1
     [[ "$normalized_classes" != *$'\n'* ]] || return 1
     case "$os_key|$normalized_classes" in
-        ubuntu-24.04.4\|ryzen|ubuntu-26.04\|ryzen)
+        ubuntu-24.04.5\|ryzen|ubuntu-26.04.1\|ryzen)
             case "$requested_mode" in auto|inbox) printf '%s\n' inbox ;; *) return 1 ;; esac
             ;;
-        ubuntu-24.04.4\|radeon|ubuntu-24.04.4\|instinct|ubuntu-26.04\|radeon|ubuntu-26.04\|instinct)
+        ubuntu-24.04.5\|radeon|ubuntu-24.04.5\|instinct|ubuntu-26.04.1\|radeon|ubuntu-26.04.1\|instinct)
             case "$requested_mode" in auto|dkms) printf '%s\n' dkms ;; *) return 1 ;; esac
             ;;
         *) return 1 ;;
@@ -1137,16 +1121,16 @@ runfile_state_path() {
     local state_root=${ROCM_RUNFILE_STATE_ROOT:-/var/lib/rocm-installer}
 
     [[ "$state_root" == /* ]] || return 1
-    printf '%s/runfile-10.0-all\n' "${state_root%/}"
+    printf '%s/runfile-%s-all\n' "${state_root%/}" "$ROCM_SERIES"
 }
 runfile_layout_exists() {
-    local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-10.0.0}
+    local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-${ROCM_VERSION}}
     [[ -e "$install_root" ]]
 }
 
 
 runfile_layout_is_ready() {
-    local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-10.0.0}
+    local install_root=${ROCM_RUNFILE_ROOT:-/opt/rocm/core-${ROCM_VERSION}}
 
     [[ -x "$install_root/bin/rocminfo" && -x "$install_root/bin/amd-smi" ]]
 }
@@ -1176,7 +1160,7 @@ runfile_installation_is_ready() {
 }
 
 all_supported_gfxes() {
-    printf '%s\n' "${!ROCM_100_ARTIFACT_RECORDS[@]}" | LC_ALL=C sort
+    printf '%s\n' "${!ROCM_101_ARTIFACT_RECORDS[@]}" | LC_ALL=C sort
 }
 
 runfile_reports_all_architectures() {
@@ -1212,7 +1196,7 @@ mark_runfile_installation() {
 
     state_path=$(runfile_state_path) || return 1
     install -d -m 0700 "$state_root" || return $?
-    temporary=$(mktemp "${state_root%/}/.runfile-10.0-all.XXXXXX") || return $?
+    temporary=$(mktemp "${state_root%/}/.runfile-${ROCM_SERIES}-all.XXXXXX") || return $?
     if printf 'version=%s\ngfx=all\nurl=%s\n' "$ROCM_VERSION" "$ROCM_RUNFILE_URL" > "$temporary" \
         && chmod 0600 "$temporary" \
         && mv -f "$temporary" "$state_path"; then
@@ -1578,8 +1562,8 @@ configure_amdgpu_repository() {
     local os_key=${INSTALL_PLAN[os_key]:-} codename source_line
 
     case "$os_key" in
-        ubuntu-24.04.4) codename=noble ;;
-        ubuntu-26.04) codename=resolute ;;
+        ubuntu-24.04.5) codename=noble ;;
+        ubuntu-26.04.1) codename=resolute ;;
         *) return 1 ;;
     esac
     source_line="deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] ${AMDGPU_REPOSITORY} ${codename} main"
@@ -1709,8 +1693,8 @@ user_has_required_groups() {
 
 rocm_install_root() {
     case "${INSTALL_PLAN[method]:-${INSTALL_METHOD:-}}" in
-        apt) printf '%s\n' /opt/rocm/core-10.0 ;;
-        runfile) printf '%s\n' "${ROCM_RUNFILE_ROOT:-/opt/rocm/core-10.0.0}" ;;
+        apt) printf '%s\n' "/opt/rocm/core-${ROCM_SERIES}" ;;
+        runfile) printf '%s\n' "${ROCM_RUNFILE_ROOT:-/opt/rocm/core-${ROCM_VERSION}}" ;;
         *) return 1 ;;
     esac
 }
@@ -1755,7 +1739,7 @@ is_expected_rocm_link() {
 rocm_apt_package_candidates() {
     local gfx package
 
-    for gfx in "${!ROCM_100_ARTIFACT_RECORDS[@]}"; do
+    for gfx in "${!ROCM_101_ARTIFACT_RECORDS[@]}"; do
         package=$(resolve_package_name full "$gfx") || return $?
         printf '%s\n' "$package"
     done | LC_ALL=C sort -u
@@ -1807,7 +1791,7 @@ find_interrupted_rocm_layout_candidate() {
     local active_root=${1:-/opt/rocm} candidate found=""
 
     for candidate in "${active_root}-"*; do
-        [[ -d "$candidate" && ! -L "$candidate" && -d "$candidate/core-10.0" ]] || continue
+        [[ -d "$candidate" && ! -L "$candidate" && -d "$candidate/core-${ROCM_SERIES}" ]] || continue
         [[ -z "$found" ]] || return 2
         found=$candidate
     done
@@ -1835,7 +1819,7 @@ repair_legacy_rocm_layout() {
 rocm_apt_verification_root_exists() {
     local active_root=${1:-/opt/rocm}
 
-    [[ -d "$active_root/core-10.0" ]]
+    [[ -d "$active_root/core-${ROCM_SERIES}" ]]
 }
 
 cleanup_managed_rocm_environment() {
@@ -1849,11 +1833,11 @@ do_uninstall_runfile() {
 
     state_path=$(runfile_state_path) || return 1
     [[ -f "$state_path" ]] || {
-        printf '%s\n' 'Runfile uninstall refused: no registered ROCm 10.0 Runfile installation was found.' >&2
+        printf 'Runfile uninstall refused: no registered ROCm %s Runfile installation was found.\n' "$ROCM_SERIES" >&2
         return 1
     }
     if [[ "${NON_INTERACTIVE:-false}" != true ]]; then
-        read -r -p 'Remove the ROCm 10.0 Runfile installation? [y/N] ' answer || return 1
+        read -r -p "Remove the ROCm ${ROCM_SERIES} Runfile installation? [y/N] " answer || return 1
         [[ "$answer" == y || "$answer" == Y || "$answer" == yes || "$answer" == YES ]] || return 1
     fi
     temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/rocm-runfile-uninstall.XXXXXX") || return $?
@@ -1880,7 +1864,7 @@ do_uninstall_runfile() {
     }
     run_cmd rm -f "$state_path" || return $?
     run_cmd rm -rf "$temp_dir" || return $?
-    printf '%s\n' 'ROCm 10.0.0 Runfile installation removed; AMDGPU driver was left installed.'
+    printf 'ROCm %s Runfile installation removed; AMDGPU driver was left installed.\n' "$ROCM_VERSION"
 }
 
 do_uninstall() {
@@ -1898,7 +1882,7 @@ do_uninstall() {
     fi
 
     if [[ "${NON_INTERACTIVE:-false}" != true ]]; then
-        read -r -p 'Remove ROCm 10.0.0? [y/N] ' output || return 1
+        read -r -p "Remove ROCm ${ROCM_VERSION}? [y/N] " output || return 1
         [[ "$output" == y || "$output" == Y || "$output" == yes || "$output" == YES ]] || return 1
     fi
     output=$(rocm_apt_installed_package_candidates) || return $?
@@ -1912,7 +1896,7 @@ do_uninstall() {
             failure_status=$?
         fi
     fi
-    if run_cmd rm -rf /opt/rocm/core-10.0 "/opt/rocm-${ROCM_VERSION}"; then
+    if run_cmd rm -rf "/opt/rocm/core-${ROCM_SERIES}" "/opt/rocm-${ROCM_VERSION}"; then
         :
     else
         command_status=$?
@@ -1960,7 +1944,7 @@ do_uninstall() {
         fi
     fi
     if ((failure_status == 0)); then
-        printf '%s\n' 'ROCm 10.0.0 removed; amdgpu-dkms was left installed.'
+        printf 'ROCm %s removed; amdgpu-dkms was left installed.\n' "$ROCM_VERSION"
     else
         printf '%s\n' 'ROCm cleanup completed with errors; amdgpu-dkms was left installed.' >&2
     fi

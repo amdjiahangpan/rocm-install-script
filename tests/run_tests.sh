@@ -12,4 +12,4 @@ bash "${TEST_DIR}/test_runfile.sh"
 bash "${TEST_DIR}/test_system_flow.sh"
 bash "${TEST_DIR}/test_lifecycle.sh"
 
-printf 'PASS: all ROCm 10.0 installer tests\n'
+printf 'PASS: all ROCm 10.1 installer tests\n'

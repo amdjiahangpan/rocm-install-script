@@ -7,7 +7,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
 FLOW=""
 record_step() { FLOW+="$1"$'\n'; }
 require_root() { record_step root; }
-detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=6.17.0-23-generic; }
+detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=7.0.0-28-generic; }
 resolve_gpu_identity() {
     [[ $# -eq 0 ]] || return 64
     GPU_ARCHES=$(normalize_gfxes "$GPU_ARCHES") || return $?
@@ -25,14 +25,14 @@ resolve_install_plan() {
         [gfxes]="$GPU_ARCHES"
         [gpu_classes]="$gpu_classes"
         [gpu_source]=explicit
-        [os_key]=ubuntu-24.04.4
+        [os_key]=ubuntu-24.04.5
         [repo_slug]=ubuntu2404
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
-        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE" ubuntu-24.04.4 "$gpu_classes" "$GPU_ARCHES")"
+        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE" ubuntu-24.04.5 "$gpu_classes" "$GPU_ARCHES")"
         [driver_status]=ready
         [kernel_status]=ready
-        [kernel_target]='6.17.*-generic'
+        [kernel_target]='7.0.*-generic'
         [kernel_package]=linux-generic-hwe-24.04
         [product_names]="$GPU_PRODUCT_NAMES"
     )
@@ -87,7 +87,7 @@ assert_contains "$MAIN_OUTPUT" "sudo" "root preflight tells users how to proceed
 assert_eq "root" "${FLOW%$'\n'}" "root preflight runs no later stage"
 
 require_root() { record_step root; }
-detect_system() { record_step system; OS_ID=debian; OS_VERSION=13; ARCH=x86_64; KERNEL_VERSION=6.17.0-23-generic; return 29; }
+detect_system() { record_step system; OS_ID=debian; OS_VERSION=13; ARCH=x86_64; KERNEL_VERSION=7.0.0-28-generic; return 29; }
 FLOW=""
 assert_status 29 "system detection preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
 assert_contains "$MAIN_OUTPUT" "system detection" "system detection identifies the failed stage"
@@ -95,7 +95,7 @@ assert_contains "$MAIN_OUTPUT" "Ubuntu/x86_64" "system detection tells users the
 assert_contains "$MAIN_OUTPUT" "os=debian-13" "system detection reports detected host context"
 assert_eq $'root\nsystem' "${FLOW%$'\n'}" "system detection runs no mutation stage"
 
-detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=6.17.0-23-generic; }
+detect_system() { record_step system; OS_ID=ubuntu; OS_VERSION=24.04; ARCH=x86_64; KERNEL_VERSION=7.0.0-28-generic; }
 resolve_gpu_identity() { record_step gpu; return 31; }
 FLOW=""
 assert_status 31 "GPU preflight preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
@@ -116,7 +116,7 @@ FLOW=""
 assert_status 37 "plan validation preserves its failure status" capture_main_output --gpu-arch gfx1151 --non-interactive --skip-reboot
 assert_contains "$MAIN_OUTPUT" "installation plan validation" "plan validation identifies the failed stage"
 assert_contains "$MAIN_OUTPUT" "os=ubuntu-24.04" "plan validation reports operating-system context"
-assert_contains "$MAIN_OUTPUT" "kernel=6.17.0-23-generic" "plan validation reports kernel context"
+assert_contains "$MAIN_OUTPUT" "kernel=7.0.0-28-generic" "plan validation reports kernel context"
 assert_contains "$MAIN_OUTPUT" "driver=auto" "plan validation reports driver context"
 assert_contains "$MAIN_OUTPUT" "gfx=gfx1151" "plan validation reports GPU context"
 assert_eq $'root\nsystem\ngpu:gfx1151\nplan' "${FLOW%$'\n'}" "plan validation runs no mutation stage"
@@ -130,14 +130,14 @@ resolve_install_plan() {
         [gfxes]="$GPU_ARCHES"
         [gpu_classes]="$gpu_classes"
         [gpu_source]=explicit
-        [os_key]=ubuntu-24.04.4
+        [os_key]=ubuntu-24.04.5
         [repo_slug]=ubuntu2404
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
-        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE" ubuntu-24.04.4 "$gpu_classes" "$GPU_ARCHES")"
+        [driver_mode]="$(resolve_driver_mode "$DRIVER_MODE" ubuntu-24.04.5 "$gpu_classes" "$GPU_ARCHES")"
         [driver_status]=ready
         [kernel_status]=ready
-        [kernel_target]='6.17.*-generic'
+        [kernel_target]='7.0.*-generic'
         [kernel_package]=linux-generic-hwe-24.04
         [product_names]="$GPU_PRODUCT_NAMES"
     )
@@ -168,14 +168,14 @@ resolve_install_plan() {
         [gfxes]="$GPU_ARCHES"
         [gpu_classes]="$gpu_classes"
         [gpu_source]=explicit
-        [os_key]=ubuntu-24.04.4
+        [os_key]=ubuntu-24.04.5
         [repo_slug]=ubuntu2404
         [method]="$INSTALL_METHOD"
         [artifacts]="$artifacts"
         [driver_mode]=inbox
         [driver_status]=ready
         [kernel_status]=install-required
-        [kernel_target]='6.17.*-generic'
+        [kernel_target]='7.0.*-generic'
         [kernel_package]=linux-generic-hwe-24.04
         [product_names]="$GPU_PRODUCT_NAMES"
     )
@@ -269,20 +269,20 @@ run_cmd() {
     fi
 }
 
-real_dkms_package_version='1:6.19.18.31500000-2364437.24.04'
-real_dkms_firmware_version='1:31.50.0.0.31500000-2364437.24.04'
-real_dkms_status=$'amdgpu/6.19.18-2364437.24.04, 6.8.0-138-generic, x86_64: installed\namdgpu/6.19.18-2364437.24.04, 7.0.0-28-generic, x86_64: installed'
+real_dkms_package_version='1:7.1.9.31600000-2407772.24.04'
+real_dkms_firmware_version='1:31.60.0.0.31600000-2407772.24.04'
+real_dkms_status=$'amdgpu/7.1.9-2407772.24.04, 6.8.0-138-generic, x86_64: installed\namdgpu/7.1.9-2407772.24.04, 7.0.0-28-generic, x86_64: installed'
 AMDGPU_DKMS_PACKAGE_VERSION=$real_dkms_package_version
 AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
 AMDGPU_DKMS_STATUS=$real_dkms_status
 KERNEL_VERSION=6.8.0-138-generic
-assert_success "real AMDGPU 31.50 package and DKMS metadata is clean" amdgpu_dkms_is_clean_current
-AMDGPU_DKMS_STATUS='amdgpu/6.19.18-2364437.24.04, 7.0.0-28-generic, x86_64: installed'
-assert_fails "AMDGPU 31.50 without the running-kernel module is not clean" amdgpu_dkms_is_clean_current
+assert_success "real AMDGPU 31.60 package and DKMS metadata is clean" amdgpu_dkms_is_clean_current
+AMDGPU_DKMS_STATUS='amdgpu/7.1.9-2407772.24.04, 7.0.0-28-generic, x86_64: installed'
+assert_fails "AMDGPU 31.60 without the running-kernel module is not clean" amdgpu_dkms_is_clean_current
 AMDGPU_DKMS_STATUS=$real_dkms_status
 AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION='1:31.40.0.0.31400000-older.24.04'
-assert_fails "AMDGPU 31.50 with mismatched firmware is not clean" amdgpu_dkms_is_clean_current
-AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION='1:31x50.0.0.31500000-2364437.24.04'
+assert_fails "AMDGPU 31.60 with mismatched firmware is not clean" amdgpu_dkms_is_clean_current
+AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION='1:31x60.0.0.31600000-2407772.24.04'
 assert_fails "malformed AMDGPU firmware release text is not accepted as 31.50" amdgpu_dkms_is_clean_current
 AMDGPU_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
 
@@ -298,7 +298,7 @@ ln -s "$runtime_driver_root" "${runtime_device_root}/driver"
 AMDGPU_RUNTIME_PCI_ROOT=$runtime_pci_root
 AMDGPU_RUNTIME_KFD_ROOT="${ROOT_DIR}/tests/fixtures/rx-9060-xt/kfd"
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
-INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.5)
 assert_success "running AMDGPU DKMS module, PCI binding, and KFD target are active" amdgpu_dkms_runtime_is_active
 r9700_runtime_pci_root="${TEST_TEMP_ROOT}/r9700-runtime-pci"
 cp -a "${ROOT_DIR}/tests/fixtures/r9700-four-gpu/pci" "$r9700_runtime_pci_root"
@@ -307,11 +307,11 @@ for r9700_runtime_device in "$r9700_runtime_pci_root"/*; do
 done
 AMDGPU_RUNTIME_PCI_ROOT=$r9700_runtime_pci_root
 AMDGPU_RUNTIME_KFD_ROOT="${ROOT_DIR}/tests/fixtures/r9700-four-gpu/kfd"
-INSTALL_PLAN=([gfxes]=gfx1201 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+INSTALL_PLAN=([gfxes]=gfx1201 [driver_mode]=dkms [os_key]=ubuntu-24.04.5)
 assert_success "active DKMS accepts four bound unmapped R9700 PCI devices with matching KFD" amdgpu_dkms_runtime_is_active
 AMDGPU_RUNTIME_PCI_ROOT=$runtime_pci_root
 AMDGPU_RUNTIME_KFD_ROOT="${ROOT_DIR}/tests/fixtures/rx-9060-xt/kfd"
-INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.5)
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
 assert_fails "an inbox module path is not active DKMS" amdgpu_dkms_runtime_is_active
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
@@ -326,14 +326,14 @@ MOCK_DKMS_STATUS=$real_dkms_status
 DKMS_CLEANUP_POLICY=never
 NON_INTERACTIVE=true
 REBOOT_REQUIRED=false
-assert_success "a clean active AMDGPU 31.50 installation is left unchanged" migrate_driver
+assert_success "a clean active AMDGPU 31.60 installation is left unchanged" migrate_driver
 assert_eq false "$REBOOT_REQUIRED" "active AMDGPU DKMS does not request reboot"
 assert_eq '' "$RECORDED_COMMANDS" "active AMDGPU DKMS performs no purge or install"
 
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/kernel/drivers/gpu/drm/amd/amdgpu/amdgpu.ko.zst'
 reset_test_state
 REBOOT_REQUIRED=false
-assert_success "clean but inactive AMDGPU 31.50 waits for activation without reinstall" migrate_driver
+assert_success "clean but inactive AMDGPU 31.60 waits for activation without reinstall" migrate_driver
 assert_eq true "$REBOOT_REQUIRED" "inactive AMDGPU DKMS requests one activation reboot"
 assert_eq '' "$RECORDED_COMMANDS" "inactive clean AMDGPU DKMS is not purged or reinstalled"
 AMDGPU_RUNTIME_MODULE_PATH_OVERRIDE='/lib/modules/6.8.0-138-generic/updates/dkms/amdgpu.ko.zst'
@@ -344,9 +344,9 @@ MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=$real_dkms_firmware_version
 MOCK_DKMS_STATUS=$real_dkms_status
 DKMS_CLEANUP_POLICY=never
 NON_INTERACTIVE=true
-INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.4)
+INSTALL_PLAN=([gfxes]=gfx1200 [driver_mode]=dkms [os_key]=ubuntu-24.04.5)
 REBOOT_REQUIRED=false
-assert_success "a clean real AMDGPU 31.50 installation is left unchanged" migrate_driver
+assert_success "a clean real AMDGPU 31.60 installation is left unchanged" migrate_driver
 assert_eq '' "$RECORDED_COMMANDS" "a clean AMDGPU 31.40 rerun performs no purge or install"
 
 assert_eq ready "$(resolve_driver_status dkms)" "clean active DKMS resolves ready"
@@ -395,7 +395,7 @@ MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=31.30.1
 MOCK_DKMS_STATUS='amdgpu/31.30.1, 6.17.0, x86_64: installed'
 DKMS_CLEANUP_POLICY=always
 NON_INTERACTIVE=true
-INSTALL_PLAN=([driver_mode]=inbox [os_key]=ubuntu-24.04.4)
+INSTALL_PLAN=([driver_mode]=inbox [os_key]=ubuntu-24.04.5)
 assert_success "inbox removes conflicting old DKMS state" migrate_driver
 assert_contains "$RECORDED_COMMANDS" "dpkg --purge amdgpu-dkms amdgpu-dkms-firmware" "inbox cleanup purges both exact legacy DKMS packages"
 assert_not_contains "$RECORDED_COMMANDS" "apt-get" "inbox cleanup does not run APT before removing old DKMS state"
@@ -407,27 +407,29 @@ MOCK_DKMS_FIRMWARE_PACKAGE_VERSION=''
 MOCK_DKMS_STATUS='amdgpu/31.30.1, 6.8.0, x86_64: installed'
 DKMS_CLEANUP_POLICY=always
 NON_INTERACTIVE=true
-INSTALL_PLAN=([driver_mode]=dkms [os_key]=ubuntu-24.04.4)
-assert_success "DKMS mode migrates to AMDGPU 31.50" migrate_driver
+INSTALL_PLAN=([driver_mode]=dkms [os_key]=ubuntu-24.04.5)
+assert_success "DKMS mode migrates to AMDGPU 31.60" migrate_driver
 assert_contains "$RECORDED_COMMANDS" "dpkg --purge amdgpu-dkms" "DKMS purges conflicting old state before repository setup"
-assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "DKMS installs AMDGPU 31.50"
+assert_contains "$RECORDED_COMMANDS" "apt-get install --yes amdgpu-dkms" "DKMS installs AMDGPU 31.60"
 
 assert_eq radeon "$(resolve_gpu_classes gfx1200)" "gfx1200 resolves to the Radeon policy class"
 assert_eq ryzen "$(resolve_gpu_classes gfx1151)" "gfx1151 resolves to the Ryzen policy class"
 assert_eq instinct "$(resolve_gpu_classes gfx942)" "gfx942 resolves to the Instinct policy class"
-assert_eq dkms "$(resolve_driver_mode auto ubuntu-24.04.4 radeon gfx1200)" "Ubuntu 24 Radeon auto mode selects AMDGPU DKMS"
-assert_eq inbox "$(resolve_driver_mode auto ubuntu-24.04.4 ryzen gfx1151)" "Ubuntu 24 Ryzen auto mode selects the inbox driver"
-assert_eq dkms "$(resolve_driver_mode dkms ubuntu-24.04.4 radeon gfx1200)" "Ubuntu 24 Radeon accepts explicit DKMS"
-assert_fails "Ubuntu 24 Ryzen rejects explicit DKMS" resolve_driver_mode dkms ubuntu-24.04.4 ryzen gfx1151
+assert_eq dkms "$(resolve_driver_mode auto ubuntu-24.04.5 radeon gfx1200)" "Ubuntu 24 Radeon auto mode selects AMDGPU DKMS"
+assert_eq inbox "$(resolve_driver_mode auto ubuntu-24.04.5 ryzen gfx1151)" "Ubuntu 24 Ryzen auto mode selects the inbox driver"
+assert_eq dkms "$(resolve_driver_mode dkms ubuntu-24.04.5 radeon gfx1200)" "Ubuntu 24 Radeon accepts explicit DKMS"
+assert_fails "Ubuntu 24 Ryzen rejects explicit DKMS" resolve_driver_mode dkms ubuntu-24.04.5 ryzen gfx1151
 
-assert_eq '6.17.*-generic|linux-generic-hwe-24.04' "$(kernel_policy_for inbox ubuntu-24.04.4 gfx1151)" "Ubuntu 24 Ryzen targets select the recommended HWE metapackage"
-assert_success "Ubuntu 24 Ryzen accepts the recommended HWE kernel release" validate_ubuntu_kernel inbox ubuntu-24.04.4 6.17.0-23-generic gfx1151
-assert_fails "Ubuntu 24 Ryzen rejects a matching series with OEM flavor" validate_ubuntu_kernel inbox ubuntu-24.04.4 6.17.0-23-oem gfx1151
-assert_fails "Ubuntu 24 Ryzen rejects DKMS mode" kernel_policy_for dkms ubuntu-24.04.4 gfx1151
-assert_fails "Ubuntu 24 mixed Ryzen and non-Ryzen targets fail closed" kernel_policy_for inbox ubuntu-24.04.4 $'gfx1151\ngfx1201'
-assert_eq '6.8.*-generic|linux-generic' "$(kernel_policy_for inbox ubuntu-24.04.4 gfx1201)" "Ubuntu 24 non-Ryzen targets select the GA generic metapackage"
-assert_success "Ubuntu 24 non-Ryzen DKMS accepts the GA generic kernel" validate_ubuntu_kernel dkms ubuntu-24.04.4 6.8.0-101-generic gfx1201
-assert_eq '7.0.*-generic|linux-generic-7.0' "$(kernel_policy_for inbox ubuntu-26.04 gfx1151)" "Ubuntu 26 selects the approved generic metapackage"
-assert_success "Ubuntu 26 accepts the generic kernel for either driver mode" validate_ubuntu_kernel dkms ubuntu-26.04 7.0.0-11-generic gfx1151
+assert_eq '7.0.*-generic|linux-generic-hwe-24.04' "$(kernel_policy_for inbox ubuntu-24.04.5 gfx1151)" "Ubuntu 24 Ryzen targets select the recommended HWE metapackage"
+assert_success "Ubuntu 24 Ryzen accepts the recommended HWE kernel release" validate_ubuntu_kernel inbox ubuntu-24.04.5 7.0.0-28-generic gfx1151
+assert_fails "Ubuntu 24 Ryzen rejects a matching series with OEM flavor" validate_ubuntu_kernel inbox ubuntu-24.04.5 7.0.0-28-oem gfx1151
+assert_fails "Ubuntu 24 Ryzen rejects DKMS mode" kernel_policy_for dkms ubuntu-24.04.5 gfx1151
+assert_fails "Ubuntu 24 mixed Ryzen and non-Ryzen targets fail closed" kernel_policy_for inbox ubuntu-24.04.5 $'gfx1151\ngfx1201'
+assert_eq '7.0.*-generic|linux-generic-hwe-24.04' "$(kernel_policy_for inbox ubuntu-24.04.5 gfx1201)" "Ubuntu 24 Radeon targets select the HWE metapackage"
+assert_success "Ubuntu 24 Radeon DKMS accepts the HWE 7.0 kernel" validate_ubuntu_kernel dkms ubuntu-24.04.5 7.0.0-28-generic gfx1201
+assert_eq '6.8.*-generic|linux-generic' "$(kernel_policy_for dkms ubuntu-24.04.5 gfx942)" "Ubuntu 24 Instinct targets select the GA generic metapackage"
+assert_success "Ubuntu 24 Instinct DKMS accepts the GA generic kernel" validate_ubuntu_kernel dkms ubuntu-24.04.5 6.8.0-101-generic gfx942
+assert_eq '7.0.*-generic|linux-generic-7.0' "$(kernel_policy_for inbox ubuntu-26.04.1 gfx1151)" "Ubuntu 26 selects the approved generic metapackage"
+assert_success "Ubuntu 26 accepts the generic kernel for either driver mode" validate_ubuntu_kernel dkms ubuntu-26.04.1 7.0.0-11-generic gfx1151
 
 finish_tests "system flow"
